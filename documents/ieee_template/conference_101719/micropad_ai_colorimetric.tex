@@ -1,0 +1,73 @@
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithmic}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+
+\title{Smartphone-Based AI Pipeline for Colorimetric Quantification of Urea, Creatinine, and Lactate on Microfluidic Paper-Based Analytical Devices}
+
+\author{\IEEEauthorblockN{Veysel Yusuf Yilmaz\IEEEauthorrefmark{1}, Volkan Kilic\IEEEauthorrefmark{2}*}
+\IEEEauthorblockA{\IEEEauthorrefmark{1}TODO-USER: Department Name, Izmir Katip Celebi University, Izmir, Turkey\\
+Email: veyselyusufyilmaz@hotmail.com}
+\IEEEauthorblockA{\IEEEauthorrefmark{2}TODO-USER: Department Name, Izmir Katip Celebi University, Izmir, Turkey\\
+Email: volkan.kilic@ikcu.edu.tr}
+}
+
+\maketitle
+
+\begin{abstract}
+Accessible colorimetric diagnostics on microfluidic paper-based analytical devices (microPADs) can empower decentralized monitoring of biochemical markers without relying on laboratory infrastructure. Conventional interpretations depend on subjective color matching, discrete classification, or cloud connectivity, which limits quantitative accuracy and offline usability. In this study, we document a smartphone-based artificial intelligence pipeline that processes captured microPAD images and prepares feature-rich datasets for downstream quantification of urea, creatinine, and lactate. The MATLAB workflow standardizes stage-wise cropping, region-of-interest extraction, and feature calculation while preserving reproducible coordinates for every image. Stage folders encode acquisition variability across four smartphone models and seven laboratory lighting combinations, supporting robust machine learning development. Preliminary deployment targets regression models for concentration prediction and export to an embedded Android application for offline inference; \textbf{TODO-RESULTS: Report achieved limits of detection, regression error metrics, and processing latency.} Overall, the integrated pipeline lays the groundwork for point-of-care testing that is resilient to illumination changes and intermittent connectivity in resource-limited settings.
+\end{abstract}
+
+\begin{IEEEkeywords}
+smartphone; colorimetric analysis; microfluidic paper-based analytical device; machine learning; urea sensing; creatinine; lactate detection
+\end{IEEEkeywords}
+
+\section{Introduction}
+Recently, smartphone-based point-of-care testing solutions have emerged as crucial enablers for managing chronic conditions outside centralized laboratories. Traditional biochemical monitoring frequently depends on invasive blood draws that can be painful, increase infection risk, and demand trained personnel---a particular challenge for pediatric, geriatric, and home-care scenarios. Alternative biofluids such as sweat, saliva, or urine are attractive for noninvasive quantification of clinically relevant metabolites. Among available sensing strategies, colorimetric detection offers intuitive readouts, minimal instrumentation, and scalability to high-throughput screening in resource-limited settings. Colorimetric chemistries can be readily integrated into microfluidic paper-based analytical devices (\mbox{$\mu$PADs}), which pattern hydrophobic barriers to define test zones and transport channels on cellulose substrates. However, interpreting subtle color transitions remains challenging because smartphone cameras exhibit varying optics, sensors, and postprocessing, while ambient lighting shifts hue, saturation, and brightness. Artificial intelligence (AI) techniques have demonstrated strong potential for compensating these variations and translating color changes into analyte concentrations. Classic machine learning pipelines rely on engineered color and texture descriptors with modest computational demand, whereas deep learning architectures deliver end-to-end feature extraction at the expense of processing resources. Classification approaches assign samples to predefined labels, potentially obscuring continuous concentration differences, while regression models retain quantitative fidelity. Furthermore, cloud-hosted inference introduces privacy concerns and latency under unreliable internet connections. Here, we present a reproducible AI-ready pipeline that standardizes acquisition, preprocessing, and feature extraction for colorimetric \mbox{$\mu$PAD} analysis of urea, creatinine, and lactate, emphasizing offline capability and multi-phone robustness.
+
+\section{Materials and Methods}
+\subsection{Materials}
+The platform employs Whatman qualitative filter paper grade~1 as the substrate for microfluidic structuring. Colorimetric chemistries are prepared to target urea, creatinine, and lactate; \textbf{TODO-USER: Specify enzyme complexes, chromogenic reagents, concentrations, and suppliers (e.g., Sigma Aldrich, Merck).} Artificial biofluid simulants and calibration standards should be documented with compositions and storage conditions. \textbf{TODO-USER: List buffer formulations, stabilizers, and preservatives used during paper preparation and testing.}
+
+\subsection{Design and Fabrication of $\mu$PADs}
+Hydrophobic barrier patterns are designed digitally to accommodate seven concentration test zones per strip, each subdivided into three elliptical measurement regions. Wax printing followed by thermal reflow defines the hydrophobic boundaries that confine reagent droplets; \textbf{TODO-USER: Provide CAD software version, wax printer model, heating temperature, and duration.} Detection zones are functionalized with the appropriate enzyme and chromogenic mixtures for urea, creatinine, and lactate. Droplet volumes of approximately 0.8--1~\textmu L are dispensed into each region to ensure uniform reagent coverage; \textbf{TODO-USER: Confirm exact deposition volumes and drying conditions (room temperature versus refrigerated).}
+
+\subsection{Image Acquisition}
+The dataset is structured to capture real-world variability by combining four smartphone models---iPhone~11, iPhone~15, Realme~C55, and Samsung~A75---across seven controlled lighting configurations. Each microPAD instance yields seven images corresponding to distinct lamp combinations ranging from single-source to all-lamps-on conditions. Stage~1 raw photographs reside in `1\_dataset/{phone\_model}/` directories, Stage~2 cropping isolates individual strips, Stage~3 extracts rectangular concentration zones, and Stage~4 generates the three elliptical regions per zone. Consistent coordinate files accompany each stage to enable exact regeneration of processed imagery. \textbf{TODO-USER: Document camera-to-sample distance, incidence angle, white balance settings, and tripod or fixture details.} \textbf{TODO-USER: Provide information about ambient temperature, humidity control, and repeatability across acquisition sessions.}
+
+\subsection{AI-Based Colorimetric Quantification}
+The MATLAB pipeline computes a comprehensive feature set from the extracted elliptical patches, including relative RGB ratios, HSV and Lab statistics, and texture descriptors that capture homogeneity, contrast, and gradient patterns. Features are paired with paper-reference measurements from the corresponding concentration rectangles to mitigate lighting effects. These datasets are intended for regression models that output continuous analyte concentrations for urea, creatinine, and lactate. \textbf{TODO-USER: Detail the selected machine learning or deep learning algorithms, hyperparameter tuning strategy, and training/validation/test splits (e.g., 80/20 with validation carved from training).} \textbf{TODO-USER: Report augmentation parameters, normalization pipelines, and model export steps (TensorFlow Lite, ONNX, or MATLAB Coder) when finalized.}
+
+\subsection{Smartphone Application Integration}
+A dedicated Android application is planned to embed the trained models for offline inference, enabling immediate results without cloud connectivity. The app workflow will guide users through image capture, segmentation, and concentration readout. \textbf{TODO-USER: Provide application name, development environment (e.g., Android Studio version), UI screenshots, and inference latency measurements.} Model deployment will follow conversion to on-device formats and incorporate fail-safe checks for lighting and focus.
+
+\subsection{Selectivity and Validation}
+To confirm analytical specificity, interferent studies with compounds such as uric acid, ascorbic acid, and dopamine should be performed on representative microPADs. \textbf{TODO-USER: Summarize experimental protocols, concentrations, and acceptance thresholds for selectivity metrics.} Real-sample validation using clinically relevant matrices (e.g., urine or sweat) is encouraged once ethical approvals and sample handling procedures are defined.
+
+\section{Results and Discussion}
+\textbf{NOTE:} Experimental data collection and model training are in progress. The following milestones remain outstanding:
+\begin{itemize}
+    \item \textbf{TODO-RESULTS:} Acquire colorimetric responses for calibration standards spanning 0--10~mM (or target range) for each analyte under all lighting conditions.
+    \item \textbf{TODO-RESULTS:} Train regression models and report metrics such as mean absolute error, coefficient of determination, and limits of detection derived from calibration curves.
+    \item \textbf{TODO-RESULTS:} Evaluate inter-phone repeatability and robustness across lighting permutations using the coordinate-driven reconstruction pipeline.
+    \item \textbf{TODO-RESULTS:} Assess selectivity against common interferents and validate with real or simulated clinical samples.
+\end{itemize}
+As experiments conclude, this section will be updated with quantitative analyses, representative microPAD images, and comparative discussions against related literature.
+
+\section{Conclusion and Future Work}
+We presented the current status of a smartphone-based AI pipeline for colorimetric quantification of urea, creatinine, and lactate on microfluidic paper-based analytical devices. The documented MATLAB workflow preserves reproducible processing through coordinate logs, accommodates acquisition variability across multiple smartphones and lighting setups, and prepares feature-rich datasets for machine learning. Future efforts will finalize experimental measurements, complete regression model development, and integrate inference models into an offline-capable smartphone application. Successful deployment will enable rapid, low-cost biochemical monitoring suitable for home diagnostics and resource-limited healthcare environments.
+
+\section*{Acknowledgment}
+\textbf{TODO-USER: Insert funding acknowledgments, project identifiers, or collaborating laboratories as appropriate.}
+
+\begin{thebibliography}{00}
+\bibitem{b1} \textbf{TODO-USER:} Add foundational references on microfluidic paper-based analytical devices and colorimetric sensing.
+\bibitem{b2} \textbf{TODO-USER:} Cite related work on smartphone-based AI analysis for biochemical assays.
+\bibitem{b3} \textbf{TODO-USER:} Include references describing machine learning techniques for colorimetric quantification.
+\end{thebibliography}
+
+\end{document}
