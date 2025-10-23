@@ -21,6 +21,8 @@ parameters:
 
 Generate publication-quality LaTeX documents for microPAD colorimetric analysis following the established style, terminology, and methodology of previous publications from the research group (Kılıç, Şen, et al.).
 
+**Overleaf Deployment Ready**: All outputs are generated in `documents/ieee_template/` with proper figure management, making the entire directory tree ready to zip and upload to Overleaf for immediate compilation. The agent automatically copies necessary images from pipeline outputs to the `figures/` subdirectory and uses relative paths throughout.
+
 ## Input Parameters (Optional)
 
 The agent can accept the following parameters to pre-populate document information:
@@ -414,12 +416,16 @@ FirstName4 LastName4: Conceptualization (equal); Supervision (equal); Funding ac
 - μPAD structure with detection zones visible
 - Smartphone camera at specified angle and distance
 - Chemical reaction pathway (Analyte → Enzyme1 → Intermediate → Enzyme2 + Chromogen → Color)
+- **Available images**: For raw smartphone capture, use `demo_images/stage1_original_image.jpeg` or images from `1_dataset/{phone}/`
 - Caption pattern: "A schematic illustration of the AI-based [method] enhanced quantitative detection of [analytes] in [sample]. Color change in the detection zones was imaged under various combinations of [light sources] using smartphone cameras of different brands."
 
 **Figure 2: Color Change Visualization**:
 - Grid showing μPAD images at different concentrations
 - Rows: time points (0 min, 5 min, 10 min) OR different detection mixtures
 - Columns: concentrations (0, 0.1, 0.25, 0.5, 1, 5, 10 mM)
+- **Available images**: Copy concentration series from `3_concentration_rectangles/iphone_11/con_0/` through `con_6/`
+  - Example: `IMG_0957_con_0.jpeg`, `IMG_0957_con_1.jpeg`, ..., `IMG_0957_con_6.jpeg`
+  - Shows actual color gradient progression across 7 concentration levels
 - Caption: "Images of μPADs showing visually observable color changes with varying concentrations of [analyte] in [sample] at t = X min"
 
 **Figure 3: DNN/CNN Architecture** (if applicable):
@@ -652,12 +658,13 @@ augment_dataset('numAugmentations', 5, 'rngSeed', 42)
 - For pipeline documentation: `microPAD_pipeline_documentation.tex`
 - For research paper: `[analyte]_detection_smartphone_uPAD.tex`
 
-**Location**: `documents/ieee_template/` directory (preferred) OR project root
+**Location**: `documents/ieee_template/` directory (REQUIRED for Overleaf deployment)
 
 **Document Class**: `\documentclass[conference]{IEEEtran}` (see `documents/ieee_template/IEEEtran.cls`)
 
 **Compilation**:
 ```bash
+cd documents/ieee_template
 pdflatex filename.tex
 pdflatex filename.tex  # Run twice for cross-references
 ```
@@ -673,6 +680,113 @@ pdflatex filename.tex  # Run twice for cross-references
 - Automatic section numbering
 - Figures/tables at top or bottom of columns
 - References numbered consecutively [1], [2], etc.
+
+## Overleaf Deployment Readiness
+
+### Directory Structure
+The agent outputs to `documents/ieee_template/` which serves as the complete Overleaf package:
+```
+documents/ieee_template/
+├── IEEEtran.cls              (already present - IEEE document class)
+├── conference_101719.tex     (template reference)
+├── micropad_ai_colorimetric.tex (example output)
+├── [your_output].tex         (newly generated document)
+└── figures/                  (figure directory)
+    ├── stage1_original_image.jpeg
+    ├── stage2_micropad_paper.jpeg
+    ├── stage3_concentration_rectangle.jpeg
+    ├── stage4_elliptical_region_1.jpeg
+    ├── augmented_dataset_1.jpg
+    ├── white_referenced_pixels_on_rectangle.png
+    └── [additional figures copied by agent]
+```
+
+### Figure Management Workflow
+
+**CRITICAL**: All `\includegraphics` commands must use relative paths from `documents/ieee_template/`:
+```latex
+\includegraphics[width=\columnwidth]{figures/stage2_micropad_paper.jpeg}
+```
+
+**Available Image Sources** (to copy from):
+1. **`demo_images/`** - Representative examples of each pipeline stage:
+   - `stage1_original_image.jpeg` - Raw smartphone capture
+   - `stage2_micropad_paper.jpeg` - Cropped paper strip
+   - `stage3_concentration_rectangle.jpeg` - Polygonal region
+   - `stage4_elliptical_region_1.jpeg` - Elliptical patch
+   - `augmented_concentration_rectangle_1.jpeg`, `augmented_concentration_rectangle_2.jpeg`
+   - `augmented_elliptical_region1.jpeg`, `augmented_elliptical_region_2.jpeg`
+
+2. **`1_dataset/{phone}/`** - Raw microPAD images from multiple phones:
+   - `iphone_11/IMG_0957.jpeg` through `IMG_0963.jpeg`
+   - `iphone_15/IMG_2966.jpeg` through `IMG_2972.jpeg`
+   - `samsung_a75/20250924_*.jpg`
+   - `realme_c55/IMG20250924*.jpg`
+
+3. **`2_micropad_papers/{phone}/`** - Cropped paper strips (Stage 2 output)
+
+4. **`3_concentration_rectangles/{phone}/con_N/`** - Individual concentration regions (Stage 3 output)
+   - Shows color gradients across concentrations (con_0 through con_6)
+
+5. **`4_elliptical_regions/{phone}/con_N/`** - Elliptical patches (Stage 4 output)
+   - Format: `{base}_con{N}_rep{M}.jpeg` (M = 1,2,3 for three replicates)
+
+6. **Augmented datasets**:
+   - `augmented_1_dataset/` - Synthetic scenes
+   - `augmented_2_concentration_rectangles/` - Transformed polygons
+   - `augmented_3_elliptical_regions/` - Transformed ellipses
+
+### Figure Selection Strategy
+
+**For Pipeline Documentation**:
+- Copy all files from `demo_images/` to `documents/ieee_template/figures/`
+- Shows complete pipeline progression visually
+- Already curated representative examples
+
+**For Research Papers** (μPAD colorimetric analysis):
+- **Figure 1 (System Overview)**: Use schematic placeholder or copy `stage1_original_image.jpeg`
+- **Figure 2 (Color Change Grid)**: Select concentration series from `3_concentration_rectangles/iphone_11/con_*/`
+  - Copy: `IMG_0957_con_0.jpeg`, `IMG_0957_con_1.jpeg`, ..., `IMG_0957_con_6.jpeg`
+  - Shows concentration gradient (0 through 6)
+- **Figure 3 (Architecture)**: Use placeholder for DNN/CNN diagram
+- **Figure 4 (App Interface)**: Use placeholder or external screenshots
+- **Figure 5-7**: Use placeholders or existing images from `figures/` directory
+
+**For Augmentation Documentation**:
+- Copy representative images from `augmented_1_dataset/`, `augmented_2_concentration_rectangles/`, `augmented_3_elliptical_regions/`
+- Use `demo_images/augmented_*.jpeg` for quick examples
+
+### Agent Actions for Figure Management
+
+**When generating LaTeX document, the agent should**:
+1. Identify which figures are needed based on document type
+2. Copy required images from pipeline outputs to `documents/ieee_template/figures/`
+3. Use `\includegraphics{figures/filename.ext}` for all figure references
+4. Verify all referenced images exist in `figures/` directory
+5. Add comment in LaTeX file listing image sources:
+```latex
+% FIGURES USED:
+% - figures/stage2_micropad_paper.jpeg (from demo_images/)
+% - figures/IMG_0957_con_0.jpeg (from 3_concentration_rectangles/iphone_11/con_0/)
+% - figures/IMG_0957_con_6.jpeg (from 3_concentration_rectangles/iphone_11/con_6/)
+```
+
+### Overleaf Deployment Instructions (For User)
+
+Once the agent completes document generation:
+1. Navigate to `documents/ieee_template/`
+2. Verify all figures referenced in `.tex` file exist in `figures/` subdirectory
+3. Compress entire `ieee_template/` folder as ZIP
+4. Upload ZIP to Overleaf as new project
+5. Compile with pdfLaTeX (run twice for cross-references)
+
+**What's Included in Package**:
+- ✅ `IEEEtran.cls` - Document class file
+- ✅ `[output].tex` - Generated LaTeX document
+- ✅ `figures/` - All referenced images
+- ✅ Complete, self-contained, ready to compile
+
+**No additional files needed** - the package is deployment-ready.
 
 ## Execution Steps (Task Workflow)
 
@@ -741,16 +855,39 @@ Priority: HIGH - Must complete before writing
 ### Step 4: LaTeX Formatting
 1. **Preamble**: Copy from `documents/ieee_template/conference_101719.tex`
 2. **Tables**: Use `booktabs` package formatting
-3. **Figures**: Create `\includegraphics` placeholders with descriptive captions
+3. **Figures**: Create `\includegraphics{figures/filename.ext}` with descriptive captions
+   - All paths relative to `documents/ieee_template/`
+   - Prefix all image references with `figures/`
 4. **Equations**: Label all equations for cross-referencing
 5. **Citations**: Use `\cite{label}` format
 
-### Step 5: Quality Assurance
-1. Compile document - fix any LaTeX errors
-2. Check all cross-references work
-3. Verify terminology consistency (use group's lexicon)
-4. Ensure all acronyms defined at first use
-5. Review against Quality Checklist below
+### Step 5: Figure Management and Copying
+1. **Identify required figures** based on document type:
+   - Pipeline documentation: all demo_images
+   - Research paper: concentration series, representative examples
+   - Augmentation documentation: augmented examples
+2. **Copy images** from source folders to `documents/ieee_template/figures/`:
+   - Use Bash `cp` command to copy files
+   - Preserve original filenames or use descriptive names
+   - Example: `cp demo_images/stage2_micropad_paper.jpeg documents/ieee_template/figures/`
+3. **Update LaTeX references**:
+   - Ensure all `\includegraphics` use `figures/` prefix
+   - Verify filenames match copied files exactly
+4. **Add source tracking comment** at top of LaTeX file:
+   ```latex
+   % FIGURES USED (source → destination):
+   % - demo_images/stage2_micropad_paper.jpeg → figures/stage2_micropad_paper.jpeg
+   % - 3_concentration_rectangles/iphone_11/con_0/IMG_0957_con_0.jpeg → figures/IMG_0957_con_0.jpeg
+   ```
+
+### Step 6: Quality Assurance
+1. **Verify all figures exist**: Check that every `\includegraphics` reference points to existing file
+2. Compile document - fix any LaTeX errors
+3. Check all cross-references work
+4. Verify terminology consistency (use group's lexicon)
+5. Ensure all acronyms defined at first use
+6. Review against Quality Checklist below
+7. **Confirm Overleaf readiness**: All files in `documents/ieee_template/` directory tree
 
 ## Comprehensive Quality Checklist
 
@@ -788,12 +925,14 @@ Priority: HIGH - Must complete before writing
 ### Figures (Standard Set)
 - [ ] **Figure 1**: System schematic (μPAD → imaging → AI → results + reaction pathway)
 - [ ] **Figure 2**: Color change grid (concentrations × time points)
+  - Can use concentration series from `3_concentration_rectangles/iphone_11/con_*/IMG_0957_con_*.jpeg`
 - [ ] **Figure 3**: DNN/CNN architecture (if applicable)
 - [ ] **Figure 4**: Smartphone app screenshots (6-9 panels)
 - [ ] **Figure 5**: Confusion matrix heatmap
 - [ ] **Figure 6**: Selectivity bar chart
 - [ ] **Figure 7**: Real sample testing (volunteer + results)
-- [ ] All figures have `\includegraphics{placeholder.png}` OR `[Placeholder: Description]`
+- [ ] All figures use `\includegraphics{figures/filename.ext}` with relative paths
+- [ ] All referenced images copied to `documents/ieee_template/figures/`
 - [ ] All captions follow group's pattern (see Standard Figures section)
 
 ### Equations and Math
@@ -823,10 +962,21 @@ Priority: HIGH - Must complete before writing
 - [ ] Author block formatted: `\IEEEauthorblockN{}` and `\IEEEauthorblockA{}`
 - [ ] Acknowledgements: Turkey funding `(project no. XXXXXX)`
 
+### Overleaf Deployment Readiness
+- [ ] **Output location**: `.tex` file in `documents/ieee_template/`
+- [ ] **IEEEtran.cls present**: Already in `documents/ieee_template/` (no action needed)
+- [ ] **All figure references**: Use `figures/filename.ext` format (relative paths)
+- [ ] **Figures copied**: All referenced images exist in `documents/ieee_template/figures/`
+- [ ] **Source tracking**: Comment block at top listing figure sources
+- [ ] **No absolute paths**: All `\includegraphics` use relative paths from ieee_template/
+- [ ] **Compilation test**: Document compiles from `documents/ieee_template/` directory
+- [ ] **Self-contained**: Entire `ieee_template/` folder can be zipped and uploaded to Overleaf
+- [ ] **Figure verification**: Run `ls documents/ieee_template/figures/` to confirm all images present
+
 ### References Available
 - [ ] Can reference `documents/ieee_template/IEEEtran.cls` for class file
 - [ ] Can reference `documents/ieee_template/conference_101719.tex` for template
-- [ ] Directs user to these files rather than including full content
+- [ ] Can copy figures from `demo_images/`, `1_dataset/`, `2-4_elliptical_regions/`, augmented folders
 
 ## Critical Rules: NO FABRICATION, NO FALLBACKS
 
