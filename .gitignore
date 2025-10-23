@@ -1,0 +1,36 @@
+/1_dataset
+/backup
+
+.asv
+
+# Claude Code settings
+.claude/settings.local.json
+
+# Image files (exclude all except demo_images/)
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.bmp
+*.tiff
+*.tif
+*.svg
+*.webp
+*.ico
+*.raw
+
+# Exception: Allow images in demo_images folder
+!demo_images/*.jpg
+!demo_images/*.jpeg
+!demo_images/*.png
+!demo_images/*.gif
+!demo_images/*.bmp
+!demo_images/*.tiff
+!demo_images/*.tif
+!demo_images/*.svg
+!demo_images/*.webp
+!demo_images/*.ico
+!demo_images/*.raw
+
+# Windows null device files
+nul
