@@ -17,6 +17,7 @@
 - Typical flow: `cut_concentration_rectangles`, `cut_elliptical_regions`, `extract_features('preset','robust','chemical','lactate')`.
 - Augmentation: `matlab -batch "addpath('matlab_scripts'); augment_dataset('numAugmentations',5);"`
 - Tests (if added): `matlab -batch "runtests('matlab_scripts')"`
+- Code analysis: `matlab -batch "checkcode('matlab_scripts/script_name.m')"` (checks for unused variables, best practice violations, performance warnings)
 Notes: Run from repo root or `matlab_scripts/`. Octave is not supported due to GUI/homography/Excel I/O.
 
 ## Coding Style & Naming Conventions

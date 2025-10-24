@@ -30,6 +30,23 @@ Review MATLAB code for this microPAD colorimetric analysis pipeline, focusing on
 
 **Feature Extraction**: All features use explicit masks, no hardcoded thresholds buried deep in helpers, NaN handling for edge cases
 
+## MATLAB Code Analyzer
+
+Use MATLAB's static code analyzer to check for common issues before manual review:
+
+```bash
+matlab -batch "checkcode('matlab_scripts/script_name.m')"
+```
+
+The analyzer detects:
+- Unused variables and function arguments
+- Obsolete suppression pragmas (`%#ok<...>` that are no longer needed)
+- Input/output argument issues
+- Performance warnings
+- Best practice violations
+
+**Integration**: Run `checkcode` first to catch low-hanging issues (unused variables, obsolete suppressions), then focus manual review on pipeline-specific logic and correctness.
+
 ## Review Structure
 
 **Summary**: Brief assessment of code quality and main concerns
