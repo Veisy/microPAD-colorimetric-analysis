@@ -788,127 +788,39 @@ When asked to refactor:
 4. **Preserve existing architecture** unless fundamentally flawed
 5. **Maintain backward compatibility** with coordinate file formats
 
-## Self-Review Protocol (MANDATORY)
+## Code Review Process
 
-**After writing code, ALWAYS perform this review before submitting:**
+**Code review is delegated to code-orchestrator:**
 
-### 1. **Correctness Review**
-```matlab
-% Check for common MATLAB mistakes:
-- [ ] Array indexing: 1-based (not 0-based)
-- [ ] Matrix dimensions: Check row vs. column vectors
-- [ ] Coordinate conventions: (x,y) vs (row,col) confusion
-- [ ] Polygon ordering: Clockwise from top-left
-- [ ] Ellipse constraint: semiMajorAxis >= semiMinorAxis
-- [ ] Image formats: imread_raw() used (not imread())
-- [ ] File existence checks before fopen/imread
-```
+This agent focuses on **implementation**, not self-review. After writing code:
 
-### 2. **Pipeline Integration Review**
-```matlab
-% Verify pipeline compatibility:
-- [ ] Reads from correct stage (N_input_folder)
-- [ ] Writes to correct stage ((N+1)_output_folder)
-- [ ] Coordinate file format matches downstream expectations
-- [ ] Atomic write pattern used for coordinates.txt
-- [ ] No duplicate entries per image in coordinates
-- [ ] Phone-level directory structure preserved
-```
+1. **Submit implementation** to orchestrator
+2. **Orchestrator invokes matlab-code-reviewer** agent for independent review
+3. **If issues found**, orchestrator will send specific fix instructions
+4. **Implement fixes** and resubmit
 
-### 3. **Edge Case Review**
-```matlab
-% Test mentally with boundary conditions:
-- [ ] Empty inputs (no files, empty arrays)
-- [ ] Single element (1 image, 1 polygon, 1 concentration)
-- [ ] Maximum size (large images, many regions)
-- [ ] Invalid geometry (zero area, self-intersecting polygons)
-- [ ] Missing dependencies (coordinate files don't exist)
-- [ ] User cancellation (GUI closed mid-operation)
-```
+**Do NOT perform self-review checklist.** The matlab-code-reviewer agent will catch issues with:
+- Correctness (mask handling, coordinate bugs, geometry constraints)
+- Pipeline integration (atomic writes, stage independence)
+- Edge cases (empty inputs, invalid data)
+- Performance anti-patterns (growing arrays, redundant operations)
+- Code quality (naming, error IDs, cleanup)
 
-### 4. **Performance Review**
-```matlab
-% Check for performance anti-patterns:
-- [ ] Growing arrays in loops (use pre-allocation)
-- [ ] Nested loops on images (vectorize if possible)
-- [ ] Redundant imread calls (cache if reused)
-- [ ] Uncleared large variables (delete after use)
-- [ ] Inefficient string operations (use char vs string appropriately)
-```
+**Focus on writing correct, maintainable code following project standards. Let independent review catch issues you might miss.**
 
-### 5. **Code Quality Review**
-```matlab
-% Verify style compliance:
-- [ ] Variable names: descriptive nouns (imageWidth, polygonVertices)
-- [ ] Function names: verb phrases (scalePolygonsToNewDimensions)
-- [ ] Constants: ALL_CAPS with units (MAX_ANGLE_DEG, MIN_AREA_PX2)
-- [ ] Comments: factual only (no opinions, no history)
-- [ ] Error IDs: scriptName:errorType format
-- [ ] Input validation: inputParser with validators
-```
+## Pre-Submission Checklist (Quick Sanity Check Only)
 
-### 6. **Cleanup Review**
-```matlab
-% Ensure proper resource management:
-- [ ] All fopen() have corresponding fclose()
-- [ ] Temporary files cleaned up (even on error)
-- [ ] GUI figures closed/reused appropriately
-- [ ] Global/persistent variables justified and documented
-- [ ] No debug fprintf() statements left in code
-```
+Before submitting code, do a quick sanity check:
+- [ ] Code runs without syntax errors
+- [ ] Follows documented patterns from CLAUDE.md (atomic writes, imread_raw, etc.)
+- [ ] Function signatures match task requirements
+- [ ] No obvious bugs in main logic path
+- [ ] No debug fprintf() or commented-out code left in
 
-### 7. **Testing Review**
-```matlab
-% Mental test execution:
-- [ ] Trace through main path with typical input
-- [ ] Trace through error paths (missing files, invalid data)
-- [ ] Verify output files have expected format
-- [ ] Check coordinate file can be parsed by next stage
-- [ ] Confirm no side effects on unrelated files
-```
+**This is NOT a comprehensive review.** Submit code for orchestrator review after passing basic sanity checks.
 
-### 8. **Final Checklist**
-
-Before submitting code, verify:
-- [ ] Follows naming conventions (variables=nouns, functions=verbs, constants=CAPS)
-- [ ] Uses inputParser for parameters
-- [ ] Has specific error IDs (`scriptName:errorType`)
-- [ ] Uses atomic write pattern for coordinate files
-- [ ] Handles empty/edge cases gracefully
-- [ ] Pre-allocates arrays in loops
-- [ ] Uses imread_raw() not imread()
-- [ ] Validates polygon/ellipse geometry constraints
-- [ ] Cleans up GUI resources properly
-- [ ] Respects stage independence (reads N_*, writes (N+1)_*)
-- [ ] No opinion comments or historical notes
-- [ ] Compatible with R2019b+
-
-**If ANY item fails, FIX before submitting. Do not delegate broken code.**
-
-### 9. **Self-Review Confirmation**
-
-**After completing self-review, explicitly state in your response:**
-
-```
-✅ Self-review completed:
-- Correctness: Verified array indexing, coordinate conventions, geometry constraints
-- Pipeline: Atomic writes used, stage independence maintained
-- Edge cases: Tested empty inputs, single elements, boundary conditions
-- Performance: Pre-allocated arrays, vectorized operations
-- Quality: Naming conventions, error IDs, no debug statements
-- Cleanup: File handles closed, temp files cleaned, GUI resources managed
-- Testing: Traced main path and error paths mentally
-
-Ready for integration.
-```
-
-**If orchestrator asks "Did you perform self-review?" and you didn't:**
-- Perform review immediately
-- Report findings
-- Fix any issues before responding
-
-This confirmation helps orchestrator trust that code is production-ready.
+The orchestrator's verification workflow will ensure quality through independent review.
 
 ---
 
-Be direct, precise, and practical. Write code that solves real problems without unnecessary complexity. When in doubt, ask clarifying questions rather than making assumptions. Always perform and report self-review completion.
+Be direct, precise, and practical. Write code that solves real problems without unnecessary complexity. When in doubt, ask clarifying questions rather than making assumptions. Submit working code to orchestrator for independent review.
