@@ -45,6 +45,7 @@ function augment_dataset(varargin)
 % - 'scenePrefix' (char/string, default 'synthetic'): optional synthetic filename prefix
     % - 'photometricAugmentation' (logical, default true): enable color/lighting variation
     % - 'blurProbability' (0-1, default 0.25): fraction of samples with slight blur
+    % - 'exportCornerLabels' (logical, default false): export corner keypoint labels as JSON
     % - 'papersPerScene' (positive integer, default 1): papers combined per scene (reserved for future use)
     %
 % Examples:
@@ -55,6 +56,7 @@ function augment_dataset(varargin)
     %% CONFIGURATION CONSTANTS
     %% =====================================================================
     DEFAULT_INPUT_STAGE1 = '1_dataset';
+    DEFAULT_INPUT_STAGE2 = '2_micropad_papers';
     DEFAULT_INPUT_STAGE3_COORDS = '3_concentration_rectangles';
     DEFAULT_INPUT_STAGE4_COORDS = '4_elliptical_regions';
     DEFAULT_OUTPUT_STAGE1 = 'augmented_1_dataset';
@@ -76,7 +78,7 @@ function augment_dataset(varargin)
         'coverageCenter', 0.97, ...
         'coverageOffcenter', 0.90);
 
-    ROTATION_RANGE = [0, 180];
+    ROTATION_RANGE = [0, 360];
 
     % Background generation parameters
     TEXTURE = struct( ...
@@ -92,7 +94,12 @@ function augment_dataset(varargin)
         'tileBaseRGB', [200, 195, 185], ...
         'tileVariation', 20, ...
         'tileSpacingRange', [100, 200], ...
-        'groutWidthRange', [2, 5]);
+        'groutWidthRange', [2, 5], ...
+        'poolSize', 16, ...
+        'poolRefreshInterval', 25, ...
+        'poolShiftPixels', 48, ...
+        'poolScaleRange', [0.9, 1.1], ...
+        'poolFlipProbability', 0.15);
 
     % Artifact generation parameters
     ARTIFACTS = struct( ...
@@ -161,6 +168,7 @@ function augment_dataset(varargin)
     addParameter(parser, 'multiScale', false, @islogical);
     addParameter(parser, 'scales', [640, 800, 1024], @(x) validateattributes(x, {'numeric'}, {'vector', 'positive', 'integer'}));
     addParameter(parser, 'extremeCasesProbability', 0.10, @(x) validateattributes(x, {'numeric'}, {'scalar', '>=', 0, '<=', 1}));
+    addParameter(parser, 'exportCornerLabels', false, @islogical);
 
     parse(parser, varargin{:});
     opts = parser.Results;
@@ -215,12 +223,14 @@ function augment_dataset(varargin)
     cfg.multiScale = opts.multiScale;
     cfg.scales = opts.scales;
     cfg.extremeCasesProbability = opts.extremeCasesProbability;
+    cfg.exportCornerLabels = opts.exportCornerLabels;
 
     % Resolve paths
     projectRoot = find_project_root(DEFAULT_INPUT_STAGE1);
     cfg.projectRoot = projectRoot;
     cfg.paths = struct( ...
         'stage1Input', fullfile(projectRoot, DEFAULT_INPUT_STAGE1), ...
+        'stage2Rect', fullfile(projectRoot, DEFAULT_INPUT_STAGE2), ...
         'stage3Coords', fullfile(projectRoot, DEFAULT_INPUT_STAGE3_COORDS), ...
         'stage4Coords', fullfile(projectRoot, DEFAULT_INPUT_STAGE4_COORDS), ...
         'stage1Output', DEFAULT_OUTPUT_STAGE1, ...
@@ -313,6 +323,7 @@ function augment_phone(phoneName, cfg)
 
     % Define phone-specific paths
     stage1PhoneDir = fullfile(cfg.paths.stage1Input, phoneName);
+    stage2PhoneCoords = fullfile(cfg.paths.stage2Rect, phoneName, cfg.files.coordinates);
     stage3PhoneCoords = fullfile(cfg.paths.stage3Coords, phoneName, cfg.files.coordinates);
     stage4PhoneCoords = fullfile(cfg.paths.stage4Coords, phoneName, cfg.files.coordinates);
 
@@ -320,6 +331,15 @@ function augment_phone(phoneName, cfg)
     if ~isfolder(stage1PhoneDir)
         warning('augmentDataset:missingPhone', 'Stage 1 folder not found for %s', phoneName);
         return;
+    end
+
+    % Load stage 2 rectangular crop coordinates (needed for transformation)
+    cropEntries = [];
+    if isfile(stage2PhoneCoords)
+        cropEntries = read_rectangular_crop_coordinates(stage2PhoneCoords);
+    else
+        warning('augmentDataset:missingStage2Coords', ...
+            'No stage 2 coordinates for %s. Assuming polygons are already in 1_dataset space.', phoneName);
     end
 
     % Load polygon coordinates (required)
@@ -332,6 +352,11 @@ function augment_phone(phoneName, cfg)
     if isempty(polygonEntries)
         warning('augmentDataset:emptyPolygons', 'No valid polygon entries for %s', phoneName);
         return;
+    end
+
+    % Transform polygon coordinates from strip-space to original-image-space
+    if ~isempty(cropEntries)
+        polygonEntries = apply_crop_transforms(polygonEntries, cropEntries);
     end
 
     % Load ellipse coordinates (optional)
@@ -543,7 +568,9 @@ function emit_passthrough_sample(paperBase, imgPath, stage1Img, polygons, ellips
         write_stage3_coordinates(stage3Coords, stage3PhoneOut, cfg.files.coordinates);
     end
 
-    export_corner_labels(stage1PhoneOut, sceneName, polygonCells, size(stage1Img));
+    if cfg.exportCornerLabels
+        export_corner_labels(stage1PhoneOut, sceneName, polygonCells, size(stage1Img));
+    end
 
     fprintf('     Passthrough: %s (%d polygons, %d ellipses)\n', ...
             sceneFileName, numel(stage2Coords), numel(stage3Coords));
@@ -886,7 +913,9 @@ function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap
     imwrite(background, sceneOutPath, 'JPEG', 'Quality', cfg.jpegQuality);
 
     % Export corner keypoint labels (Phase 1.4)
-    export_corner_labels(stage1PhoneOut, sceneName, scenePolygons, size(background));
+    if cfg.exportCornerLabels
+        export_corner_labels(stage1PhoneOut, sceneName, scenePolygons, size(background));
+    end
 
     % Multi-scale scene generation (Phase 1.3)
     if cfg.multiScale && numel(cfg.scales) > 0
@@ -913,7 +942,9 @@ function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap
             imwrite(scaledScene, scaleOutPath, 'JPEG', 'Quality', cfg.jpegQuality);
 
             % Export labels for this scale
-            export_corner_labels(scaleStageDir, scaleSceneName, scaledPolygons, size(scaledScene));
+            if cfg.exportCornerLabels
+                export_corner_labels(scaleStageDir, scaleSceneName, scaledPolygons, size(scaledScene));
+            end
         end
     end
 
@@ -1110,117 +1141,237 @@ end
 %% =========================================================================
 
 function bg = generate_realistic_lab_surface(width, height, textureCfg, artifactCfg)
-    % Generate realistic lab surface backgrounds with procedural textures
-    % Prevents background overfitting by creating organic patterns
-
+    % Generate realistic lab surface backgrounds with pooled single-precision textures
     width = max(1, round(double(width)));
     height = max(1, round(double(height)));
 
     surfaceType = randi(4);
+    texture = borrow_background_texture(surfaceType, width, height, textureCfg);
 
-    if surfaceType == 1
-        % Uniform surface
-        baseRGB = textureCfg.uniformBaseRGB + randi([-textureCfg.uniformVariation, textureCfg.uniformVariation], [1, 3]);
-        texture = randn(height, width) * (textureCfg.uniformNoiseRange(1) + rand() * diff(textureCfg.uniformNoiseRange));
-
-    elseif surfaceType == 2
-        % Speckled surface
-        baseGray = 160 + randi([-25, 25]);
-        baseRGB = [baseGray, baseGray, baseGray] + randi([-5, 5], [1, 3]);
-        highFreqNoise = randn(height, width) * textureCfg.speckleHighFreq;
-        lowFreqNoise = imgaussfilt(randn(height, width), 8) * textureCfg.speckleLowFreq;
-        texture = highFreqNoise + lowFreqNoise;
-
-    elseif surfaceType == 3
-        % Laminate surface
-        if rand() < 0.5
-            baseRGB = [245, 245, 245] + randi([-5, 5], [1, 3]);
-        else
-            baseRGB = [30, 30, 30] + randi([-5, 5], [1, 3]);
-        end
-        texture = generate_laminate_texture(width, height, textureCfg);
-
-    else
-        % Skin texture
-        h = 0.03 + rand() * 0.07;
-        s = 0.25 + rand() * 0.35;
-        v = 0.55 + rand() * 0.35;
-        baseRGB = round(255 * hsv2rgb([h, s, v]));
-        texture = generate_skin_texture(width, height);
+    switch surfaceType
+        case 1  % Uniform surface
+            baseRGB = textureCfg.uniformBaseRGB + randi([-textureCfg.uniformVariation, textureCfg.uniformVariation], [1, 3]);
+            noiseAmplitude = textureCfg.uniformNoiseRange(1) + rand() * diff(textureCfg.uniformNoiseRange);
+            texture = texture .* single(noiseAmplitude);
+        case 2  % Speckled surface
+            baseGray = 160 + randi([-25, 25]);
+            baseRGB = [baseGray, baseGray, baseGray] + randi([-5, 5], [1, 3]);
+        case 3  % Laminate surface
+            if rand() < 0.5
+                baseRGB = [245, 245, 245] + randi([-5, 5], [1, 3]);
+            else
+                baseRGB = [30, 30, 30] + randi([-5, 5], [1, 3]);
+            end
+        otherwise  % Skin texture
+            h = 0.03 + rand() * 0.07;
+            s = 0.25 + rand() * 0.35;
+            v = 0.55 + rand() * 0.35;
+            baseRGB = round(255 * hsv2rgb([h, s, v]));
     end
 
     baseRGB = max(100, min(230, baseRGB));
 
-    % Create RGB background with base color
-    bg = repmat(reshape(uint8(baseRGB), [1, 1, 3]), [height, width, 1]);
-
-    % Apply texture to all channels
+    bgSingle = repmat(reshape(single(baseRGB), [1, 1, 3]), [height, width, 1]);
     for c = 1:3
-        plane = double(bg(:,:,c)) + texture;
-        bg(:,:,c) = clamp_uint8(plane);
+        bgSingle(:,:,c) = bgSingle(:,:,c) + texture;
     end
 
-    % Add lighting gradients (60% of samples) - simulates directional lighting and vignetting
     if rand() < 0.60
-        bg = add_lighting_gradient(bg, width, height);
+        bgSingle = add_lighting_gradient(bgSingle, width, height);
     end
 
-    % Add polygon artifacts (100% always) - high-density distractors for robust detection training
+    bg = clamp_uint8(bgSingle);
     bg = add_sparse_artifacts(bg, width, height, artifactCfg);
 end
 
-function texture = generate_laminate_texture(width, height, ~)
-    % Generate high-contrast laminate surface with subtle noise.
-    % Note: white/black base color selection is handled by caller.
+function texture = borrow_background_texture(surfaceType, width, height, textureCfg)
+    persistent poolState
 
+    if isempty(poolState) || texture_pool_config_changed(poolState, width, height, textureCfg)
+        poolState = initialize_background_texture_pool(width, height, textureCfg);
+    end
+
+    entry = poolState.surface(surfaceType);
+    if entry.cursor > entry.poolSize
+        entry.order = randperm(entry.poolSize);
+        entry.cursor = 1;
+    end
+
+    slot = entry.order(entry.cursor);
+    entry.cursor = entry.cursor + 1;
+
+    baseTexture = entry.textures{slot};
+    if isempty(baseTexture)
+        baseTexture = generate_surface_texture_base(surfaceType, width, height, textureCfg);
+        entry.textures{slot} = baseTexture;
+    end
+
+    texture = apply_texture_pool_jitter(baseTexture, poolState, surfaceType);
+
+    entry.usage(slot) = entry.usage(slot) + 1;
+    if entry.usage(slot) >= poolState.refreshInterval
+        entry.textures{slot} = [];
+        entry.usage(slot) = 0;
+    end
+
+    poolState.surface(surfaceType) = entry;
+end
+
+function poolState = initialize_background_texture_pool(width, height, textureCfg)
+    requestedPoolSize = max(1, round(textureCfg.poolSize));
+    bytesPerTexture = max(1, double(width) * double(height) * 4);
+    surfaces = 4;
+    maxPoolBytes = 512 * 1024 * 1024;  % cap pooled resident memory to ~512MB
+    maxPerSurface = max(1, floor((maxPoolBytes / surfaces) / bytesPerTexture));
+    poolSize = min(requestedPoolSize, maxPerSurface);
+    refreshInterval = max(1, round(textureCfg.poolRefreshInterval));
+
+    surfaceTemplate = struct( ...
+        'textures', {cell(poolSize, 1)}, ...
+        'usage', zeros(poolSize, 1, 'uint32'), ...
+        'order', randperm(poolSize), ...
+        'cursor', 1, ...
+        'poolSize', poolSize);
+
+    poolState = struct();
+    poolState.width = width;
+    poolState.height = height;
+    poolState.cfgSnapshot = textureCfg;
+    poolState.poolSize = poolSize;
+    poolState.refreshInterval = refreshInterval;
+    poolState.shiftPixels = max(0, round(textureCfg.poolShiftPixels));
+    poolState.scaleRange = sort(textureCfg.poolScaleRange);
+    if numel(poolState.scaleRange) ~= 2 || any(~isfinite(poolState.scaleRange))
+        poolState.scaleRange = [1, 1];
+    end
+    poolState.flipProb = max(0, min(1, textureCfg.poolFlipProbability));
+    poolState.surface = repmat(surfaceTemplate, 1, 4);
+    for surfaceType = 1:4
+        entry = poolState.surface(surfaceType);
+        entry.order = randperm(entry.poolSize);
+        entry.cursor = 1;
+        entry.usage(:) = 0;
+        poolState.surface(surfaceType) = entry;
+    end
+end
+
+function changed = texture_pool_config_changed(poolState, width, height, textureCfg)
+    changed = poolState.width ~= width || poolState.height ~= height || ~isequal(poolState.cfgSnapshot, textureCfg);
+end
+
+function texture = generate_surface_texture_base(surfaceType, width, height, textureCfg)
+    height = max(1, round(double(height)));
+    width = max(1, round(double(width)));
+
+    persistent randBuffer1 randBuffer2 bufferSize
+    if isempty(bufferSize) || any(bufferSize ~= [height, width])
+        randBuffer1 = zeros(height, width, 'single');
+        randBuffer2 = zeros(height, width, 'single');
+        bufferSize = [height, width];
+    end
+
+    switch surfaceType
+        case 1  % Uniform noise baseline (scaled per sample)
+            randBuffer1(:) = single(randn(height, width));
+            texture = randBuffer1;
+        case 2  % Speckled surface (high + low frequency noise)
+            randBuffer1(:) = single(randn(height, width));
+            randBuffer1 = randBuffer1 .* single(textureCfg.speckleHighFreq);
+
+            randBuffer2(:) = single(randn(height, width));
+            randBuffer2 = imgaussfilt(randBuffer2, 8);
+            randBuffer2 = randBuffer2 .* single(textureCfg.speckleLowFreq);
+
+            texture = randBuffer1 + randBuffer2;
+        case 3  % Laminate grain
+            texture = generate_laminate_texture(width, height, textureCfg);
+        case 4  % Skin-like microtexture
+            texture = generate_skin_texture(width, height);
+        otherwise
+            randBuffer1(:) = single(randn(height, width));
+            texture = randBuffer1;
+    end
+end
+
+function texture = apply_texture_pool_jitter(baseTexture, poolState, surfaceType) %#ok<INUSD>
+    texture = baseTexture;
+
+    if poolState.shiftPixels > 0
+        shiftX = randi([-poolState.shiftPixels, poolState.shiftPixels]);
+        shiftY = randi([-poolState.shiftPixels, poolState.shiftPixels]);
+        if shiftX ~= 0 || shiftY ~= 0
+            texture = circshift(texture, [shiftY, shiftX]);
+        end
+    end
+
+    if poolState.flipProb > 0
+        if rand() < poolState.flipProb
+            texture = flip(texture, 2);
+        end
+        if rand() < poolState.flipProb
+            texture = flip(texture, 1);
+        end
+    end
+
+    scaleRange = poolState.scaleRange;
+    if numel(scaleRange) == 2 && scaleRange(2) > scaleRange(1)
+        scale = scaleRange(1) + rand() * (scaleRange(2) - scaleRange(1));
+        texture = texture .* single(scale);
+    end
+end
+
+function texture = generate_laminate_texture(width, height, ~)
+    % Generate high-contrast laminate surface with subtle noise (single precision).
     width = max(1, round(double(width)));
     height = max(1, round(double(height)));
 
-    % Subtle grain/noise common to both white and black laminate bases
-    texture = randn(height, width) * 5;
+    texture = single(randn(height, width)) .* single(5);
 end
 
 function texture = generate_skin_texture(width, height)
-    % Generate subtle skin-like microtexture: low-frequency tone + fine noise
+    % Generate subtle skin-like microtexture (single precision).
     width = max(1, round(double(width)));
     height = max(1, round(double(height)));
 
-    % Low-frequency shading and pores
-    lowFreq = imgaussfilt(randn(height, width), 12) * 6;   % soft variation
-    midFreq = imgaussfilt(randn(height, width), 3) * 2;    % mild pores
-    highFreq = randn(height, width) * 1.0;                 % fine grain
+    lowFreq = imgaussfilt(single(randn(height, width)), 12) .* single(6);
+    midFreq = imgaussfilt(single(randn(height, width)), 3) .* single(2);
+    highFreq = single(randn(height, width)) .* single(1);
 
     texture = lowFreq + midFreq + highFreq;
 end
 
-
 function bg = add_lighting_gradient(bg, width, height)
-    % Add simple linear lighting gradient to simulate directional lighting
+    % Add simple linear lighting gradient to simulate directional lighting (single-aware).
 
-    % Quick guard for tiny backgrounds
     width = max(1, round(double(width)));
     height = max(1, round(double(height)));
     if width < 50 || height < 50
         return;
     end
 
-    % Create simple linear gradient in random direction
     lightAngle = rand() * 2 * pi;
-    [X, Y] = meshgrid(1:width, 1:height);
+    xAxis = single(0:(width - 1));
+    yAxis = single(0:(height - 1));
+    if width > 1
+        xAxis = xAxis / single(width - 1);
+    else
+        xAxis = zeros(size(xAxis), 'single');
+    end
+    if height > 1
+        yAxis = yAxis / single(height - 1);
+    else
+        yAxis = zeros(size(yAxis), 'single');
+    end
 
-    % Project along light direction (normalized)
-    xNorm = (X - 1) / (width - 1);
-    yNorm = (Y - 1) / (height - 1);
-    projection = xNorm * cos(lightAngle) + yNorm * sin(lightAngle);
+    [Ygrid, Xgrid] = ndgrid(yAxis, xAxis);
+    projection = Xgrid .* single(cos(lightAngle)) + Ygrid .* single(sin(lightAngle));
 
-    % Subtle gradient: 5-10% variation
-    gradientStrength = 0.05 + rand() * 0.05;
-    gradient = 1 - gradientStrength/2 + projection * gradientStrength;
-    gradient = max(0.90, min(1.10, gradient));
+    gradientStrength = single(0.05 + rand() * 0.05);
+    gradient = single(1) - gradientStrength/2 + projection .* gradientStrength;
+    gradient = max(single(0.90), min(single(1.10), gradient));
 
-    % Apply to all channels
-    for c = 1:3
-        bg(:,:,c) = clamp_uint8(double(bg(:,:,c)) .* gradient);
+    for c = 1:size(bg, 3)
+        bg(:,:,c) = bg(:,:,c) .* gradient;
     end
 end
 
@@ -1293,7 +1444,7 @@ function bg = add_sparse_artifacts(bg, width, height, artifactCfg)
             xRot = (X - centerX) * cos(angle) - (Y - centerY) * sin(angle);
             yRot = (X - centerX) * sin(angle) + (Y - centerY) * cos(angle);
             mask = (xRot / radiusA).^2 + (yRot / radiusB).^2 <= 1;
-            mask = imgaussfilt(double(mask), artifactCfg.ellipseBlurSigma);
+            mask = imgaussfilt(single(mask), artifactCfg.ellipseBlurSigma);
 
         elseif strcmp(artifactType, 'rectangle')
             % Rectangular blob (paper scrap, label)
@@ -1308,7 +1459,7 @@ function bg = add_sparse_artifacts(bg, width, height, artifactCfg)
             xRot = (X - centerX) * cos(angle) - (Y - centerY) * sin(angle);
             yRot = (X - centerX) * sin(angle) + (Y - centerY) * cos(angle);
             mask = (abs(xRot) <= rectWidth/2) & (abs(yRot) <= rectHeight/2);
-            mask = imgaussfilt(double(mask), artifactCfg.rectangleBlurSigma);
+            mask = imgaussfilt(single(mask), artifactCfg.rectangleBlurSigma);
 
         elseif strcmp(artifactType, 'quadrilateral')
             % Irregular quadrilateral (distorted rectangle - similar to perspective-transformed rectangles)
@@ -1337,7 +1488,7 @@ function bg = add_sparse_artifacts(bg, width, height, artifactCfg)
                 continue;
             end
 
-            mask = imgaussfilt(double(mask), artifactCfg.quadBlurSigma);
+            mask = imgaussfilt(single(mask), artifactCfg.quadBlurSigma);
 
         elseif strcmp(artifactType, 'triangle')
             % Triangle (paper corner, folded edge)
@@ -1364,7 +1515,7 @@ function bg = add_sparse_artifacts(bg, width, height, artifactCfg)
                 continue;
             end
 
-            mask = imgaussfilt(double(mask), artifactCfg.triangleBlurSigma);
+            mask = imgaussfilt(single(mask), artifactCfg.triangleBlurSigma);
 
         else  % 'line'
             % Thin line (scratch, pen mark, table edge) via distance-to-line mask
@@ -1381,7 +1532,7 @@ function bg = add_sparse_artifacts(bg, width, height, artifactCfg)
             dperp = abs(-dx * sin(angle) + dy * cos(angle));
             % Keep points within the finite segment and within half-width
             lineCore = (abs(tproj) <= lineLength/2) & (dperp <= lineWidth);
-            mask = imgaussfilt(double(lineCore), artifactCfg.lineBlurSigma);
+            mask = imgaussfilt(single(lineCore), artifactCfg.lineBlurSigma);
         end
 
         % Random intensity: darker or lighter
@@ -1415,10 +1566,11 @@ function bg = add_sparse_artifacts(bg, width, height, artifactCfg)
         maskYEnd = maskYStart + (yEnd - yStart);
 
         % Blend artifact into background
+        maskRegion = single(mask(maskYStart:maskYEnd, maskXStart:maskXEnd));
+        intensitySingle = single(intensity);
         for c = 1:3
-            region = double(bg(yStart:yEnd, xStart:xEnd, c));
-            maskRegion = mask(maskYStart:maskYEnd, maskXStart:maskXEnd);
-            region = region + maskRegion * intensity;
+            region = single(bg(yStart:yEnd, xStart:xEnd, c));
+            region = region + maskRegion .* intensitySingle;
             bg(yStart:yEnd, xStart:xEnd, c) = clamp_uint8(region);
         end
     end
@@ -1945,9 +2097,10 @@ function write_stage3_coordinates(coords, outputDir, filename)
     end
 end
 
-function entries = read_polygon_coordinates(coordPath)
-    % Read polygon coordinates from stage 3
-    entries = struct('image', {}, 'concentration', {}, 'vertices', {});
+function lines = read_coordinate_file_lines(coordPath)
+    % Read non-empty lines from coordinate file, skipping header
+    % Returns cell array of trimmed lines, or empty cell array if file doesn't exist
+    lines = {};
 
     if ~isfile(coordPath)
         return;
@@ -1959,29 +2112,38 @@ function entries = read_polygon_coordinates(coordPath)
     end
     cleaner = onCleanup(@() fclose(fid));
 
-    % Skip header
+    % Skip header if present
     headerLine = fgetl(fid);
     if ~ischar(headerLine) || ~contains(lower(headerLine), 'image concentration')
         fseek(fid, 0, 'bof');
     end
 
-    % Read data with pre-allocation
-    maxEntries = 10000;
-    entries = struct('image', {}, 'concentration', {}, 'vertices', {});
-    entries(maxEntries).image = '';
-    count = 0;
-
+    % Read all non-empty lines
+    lines = {};
     while true
         line = fgetl(fid);
         if ~ischar(line)
             break;
         end
         trimmed = strtrim(line);
-        if isempty(trimmed)
-            continue;
+        if ~isempty(trimmed)
+            lines{end+1} = trimmed; %#ok<AGROW>
         end
+    end
+end
 
-        parts = strsplit(trimmed);
+function entries = read_polygon_coordinates(coordPath)
+    % Read polygon coordinates from stage 3
+    lines = read_coordinate_file_lines(coordPath);
+
+    % Pre-allocate with generous estimate
+    maxEntries = max(10000, numel(lines));
+    entries = struct('image', {}, 'concentration', {}, 'vertices', {});
+    entries(maxEntries).image = '';
+    count = 0;
+
+    for i = 1:numel(lines)
+        parts = strsplit(lines{i});
         if numel(parts) < 10
             continue;
         end
@@ -2013,43 +2175,17 @@ end
 
 function entries = read_ellipse_coordinates(coordPath)
     % Read ellipse coordinates from stage 4
-    entries = struct('image', {}, 'concentration', {}, 'replicate', {}, ...
-                     'center', {}, 'semiMajor', {}, 'semiMinor', {}, 'rotation', {});
+    lines = read_coordinate_file_lines(coordPath);
 
-    if ~isfile(coordPath)
-        return;
-    end
-
-    fid = fopen(coordPath, 'rt');
-    if fid == -1
-        return;
-    end
-    cleaner = onCleanup(@() fclose(fid));
-
-    % Skip header
-    headerLine = fgetl(fid);
-    if ~ischar(headerLine) || ~contains(lower(headerLine), 'image concentration')
-        fseek(fid, 0, 'bof');
-    end
-
-    % Read data with pre-allocation
-    maxEntries = 10000;
+    % Pre-allocate with generous estimate
+    maxEntries = max(10000, numel(lines));
     entries = struct('image', {}, 'concentration', {}, 'replicate', {}, ...
                      'center', {}, 'semiMajor', {}, 'semiMinor', {}, 'rotation', {});
     entries(maxEntries).image = '';
     count = 0;
 
-    while true
-        line = fgetl(fid);
-        if ~ischar(line)
-            break;
-        end
-        trimmed = strtrim(line);
-        if isempty(trimmed)
-            continue;
-        end
-
-        parts = strsplit(trimmed);
+    for i = 1:numel(lines)
+        parts = strsplit(lines{i});
         if numel(parts) < 8
             continue;
         end
@@ -2146,13 +2282,12 @@ function valid = is_valid_polygon(vertices, minArea)
 end
 
 function positions = place_polygons_nonoverlapping(polygonBboxes, bgWidth, bgHeight, margin, minSpacing, maxAttempts)
-    % Place polygons at random non-overlapping positions using spatial grid acceleration
-    % Returns cell array of position structs {x, y} or empty if placement fails
+    % Place polygons with best-candidate sampling to maximize spacing variety.
 
     numPolygons = numel(polygonBboxes);
     positions = cell(numPolygons, 1);
 
-    % Sort by area (largest first)
+    % Sort by area (largest first) to reduce rejection cascades
     areas = zeros(numPolygons, 1);
     for i = 1:numPolygons
         areas(i) = polygonBboxes{i}.width * polygonBboxes{i}.height;
@@ -2166,59 +2301,263 @@ function positions = place_polygons_nonoverlapping(polygonBboxes, bgWidth, bgHei
     grid = cell(gridHeight, gridWidth);
 
     placedBboxes = zeros(numPolygons, 4);
+    bgDiagonal = hypot(bgWidth, bgHeight);
+
+    poissonCandidates = generate_poisson_disk_points(bgWidth, bgHeight, margin, minSpacing);
+    poissonUsed = false(size(poissonCandidates, 1), 1);
 
     for idx = 1:numPolygons
         i = sortOrder(idx);
         bbox = polygonBboxes{i};
-        placed = false;
 
-        for attempt = 1:maxAttempts
-            % Uniform random position
-            x = margin + rand() * max(1, bgWidth - bbox.width - 2*margin);
-            y = margin + rand() * max(1, bgHeight - bbox.height - 2*margin);
+        bestPos = [];
+        bestClearance = -inf;
+        bestCandidateIdx = 0;
 
-            candidateBbox = [x, y, x + bbox.width, y + bbox.height];
+        attempts = 0;
+        while attempts < maxAttempts
+            attempts = attempts + 1;
 
-            % Check collision using grid
-            minCellX = max(1, floor(x / cellSize));
-            maxCellX = min(gridWidth, ceil((x + bbox.width) / cellSize));
-            minCellY = max(1, floor(y / cellSize));
-            maxCellY = min(gridHeight, ceil((y + bbox.height) / cellSize));
-
-            collision = false;
-            for cy = minCellY:maxCellY
-                for cx = minCellX:maxCellX
-                    neighborIndices = grid{cy, cx};
-                    for j = 1:numel(neighborIndices)
-                        if bboxes_overlap(candidateBbox, placedBboxes(neighborIndices(j),:), minSpacing)
-                            collision = true;
-                            break;
-                        end
-                    end
-                    if collision, break; end
-                end
-                if collision, break; end
+            [xCandidate, yCandidate, candidateIdx, fits] = choose_candidate(bbox);
+            if ~fits
+                continue;
             end
 
-            if ~collision
-                % Place polygon and update grid
-                positions{i} = struct('x', x, 'y', y);
-                placedBboxes(i, :) = candidateBbox;
+            [canPlace, clearance] = evaluate_candidate(xCandidate, yCandidate, bbox, bgDiagonal);
+            if ~canPlace
+                continue;
+            end
 
-                for cy = minCellY:maxCellY
-                    for cx = minCellX:maxCellX
-                        grid{cy, cx}(end+1) = i;
-                    end
+            if clearance > bestClearance
+                bestClearance = clearance;
+                bestPos = [xCandidate, yCandidate];
+                bestCandidateIdx = candidateIdx;
+
+                % Early stop if clearance already exceeds spacing target
+                if clearance >= minSpacing
+                    break;
                 end
+            end
+        end
 
+        if isempty(bestPos)
+            positions = [];
+            return;
+        end
+
+        commit_candidate(bestPos(1), bestPos(2), bbox, i);
+        if bestCandidateIdx > 0
+            poissonUsed(bestCandidateIdx) = true;
+        end
+    end
+
+    function [x, y, candidateIdx, fits] = choose_candidate(bboxStruct)
+        available = find(~poissonUsed);
+        if ~isempty(available)
+            candidateIdx = available(randi(numel(available)));
+            center = poissonCandidates(candidateIdx, :);
+            [x, y, fits] = poisson_center_to_top_left(center, bboxStruct, margin, bgWidth, bgHeight);
+            if fits
+                return;
+            end
+        end
+
+        candidateIdx = 0;
+        [x, y] = random_top_left(bboxStruct, margin, bgWidth, bgHeight);
+        fits = isfinite(x) && isfinite(y);
+    end
+
+    function [canPlace, clearance] = evaluate_candidate(x, y, bboxStruct, maxClearance)
+        candidateBbox = [x, y, x + bboxStruct.width, y + bboxStruct.height];
+
+        minCellX = max(1, floor(x / cellSize));
+        maxCellX = min(gridWidth, ceil((x + bboxStruct.width) / cellSize));
+        minCellY = max(1, floor(y / cellSize));
+        maxCellY = min(gridHeight, ceil((y + bboxStruct.height) / cellSize));
+
+        neighborIndices = [];
+        for cy = minCellY:maxCellY
+            for cx = minCellX:maxCellX
+                neighborIndices = [neighborIndices, grid{cy, cx}]; %#ok<AGROW>
+            end
+        end
+        if ~isempty(neighborIndices)
+            neighborIndices = unique(neighborIndices);
+        end
+
+        clearance = maxClearance;
+        for j = neighborIndices
+            if bboxes_overlap(candidateBbox, placedBboxes(j,:), minSpacing)
+                canPlace = false;
+                clearance = -inf;
+                return;
+            end
+            gap = bbox_clearance(candidateBbox, placedBboxes(j,:));
+            clearance = min(clearance, gap);
+        end
+
+        canPlace = true;
+    end
+
+    function commit_candidate(x, y, bboxStruct, index)
+        candidateBbox = [x, y, x + bboxStruct.width, y + bboxStruct.height];
+
+        positions{index} = struct('x', x, 'y', y);
+        placedBboxes(index, :) = candidateBbox;
+
+        minCellX = max(1, floor(x / cellSize));
+        maxCellX = min(gridWidth, ceil((x + bboxStruct.width) / cellSize));
+        minCellY = max(1, floor(y / cellSize));
+        maxCellY = min(gridHeight, ceil((y + bboxStruct.height) / cellSize));
+
+        for cy = minCellY:maxCellY
+            for cx = minCellX:maxCellX
+                grid{cy, cx}(end+1) = index;
+            end
+        end
+    end
+end
+
+function [x, y] = random_top_left(bboxStruct, margin, widthVal, heightVal)
+    availX = max(0, widthVal - bboxStruct.width - 2 * margin);
+    if availX > 0
+        x = margin + rand() * availX;
+    else
+        x = max(0, (widthVal - bboxStruct.width) / 2);
+    end
+    x = min(x, widthVal - bboxStruct.width);
+
+    availY = max(0, heightVal - bboxStruct.height - 2 * margin);
+    if availY > 0
+        y = margin + rand() * availY;
+    else
+        y = max(0, (heightVal - bboxStruct.height) / 2);
+    end
+    y = min(y, heightVal - bboxStruct.height);
+end
+
+function [x, y, isValid] = poisson_center_to_top_left(centerPt, bboxStruct, marginVal, widthVal, heightVal)
+    if widthVal <= 0 || heightVal <= 0
+        isValid = false;
+        x = 0; y = 0;
+        return;
+    end
+
+    x = centerPt(1) - bboxStruct.width / 2;
+    y = centerPt(2) - bboxStruct.height / 2;
+
+    minX = marginVal;
+    maxX = widthVal - marginVal - bboxStruct.width;
+    minY = marginVal;
+    maxY = heightVal - marginVal - bboxStruct.height;
+
+    if maxX < minX || maxY < minY
+        isValid = false;
+        return;
+    end
+
+    x = max(minX, min(maxX, x));
+    y = max(minY, min(maxY, y));
+    isValid = isfinite(x) && isfinite(y);
+end
+
+function gap = bbox_clearance(bbox1, bbox2)
+    dx = max(0, max(bbox1(1) - bbox2(3), bbox2(1) - bbox1(3)));
+    dy = max(0, max(bbox1(2) - bbox2(4), bbox2(2) - bbox1(4)));
+    gap = hypot(double(dx), double(dy));
+end
+
+function points = generate_poisson_disk_points(width, height, margin, radius)
+    % Generate Poisson-disk sample points within margins
+    if radius <= 0
+        points = [];
+        return;
+    end
+
+    usableWidth = max(0, width - 2 * margin);
+    usableHeight = max(0, height - 2 * margin);
+    if usableWidth <= 0 || usableHeight <= 0
+        points = [];
+        return;
+    end
+
+    cellSize = radius / sqrt(2);
+    gridWidth = max(1, ceil(usableWidth / cellSize));
+    gridHeight = max(1, ceil(usableHeight / cellSize));
+    grid = cell(gridHeight, gridWidth);
+
+    points = zeros(0, 2);
+    active = zeros(0, 2);
+    k = 25;
+
+    initialPoint = [margin + rand() * usableWidth, margin + rand() * usableHeight];
+    points(1, :) = initialPoint;
+    active(1, :) = initialPoint;
+    [initCx, initCy] = grid_coords(initialPoint, margin, cellSize, gridWidth, gridHeight);
+    grid{initCy, initCx} = 1;
+
+    while ~isempty(active)
+        activeIdx = randi(size(active, 1));
+        anchor = active(activeIdx, :);
+        placed = false;
+
+        for attempt = 1:k
+            angle = 2 * pi * rand();
+            dist = radius * (1 + rand());
+            candidate = anchor + [cos(angle), sin(angle)] * dist;
+
+            if candidate(1) < margin || candidate(1) > width - margin || ...
+               candidate(2) < margin || candidate(2) > height - margin
+                continue;
+            end
+
+            [cx, cy] = grid_coords(candidate, margin, cellSize, gridWidth, gridHeight);
+            if cx < 1 || cy < 1 || cx > gridWidth || cy > gridHeight
+                continue;
+            end
+
+            if ~has_neighbor_conflict(candidate, cx, cy, grid, points, radius)
+                points(end+1, :) = candidate; %#ok<AGROW>
+                active(end+1, :) = candidate; %#ok<AGROW>
+                grid{cy, cx} = size(points, 1);
                 placed = true;
                 break;
             end
         end
 
         if ~placed
-            positions = [];
-            return;
+            active(activeIdx, :) = [];
+        end
+    end
+end
+
+function [cx, cy] = grid_coords(pt, margin, cellSize, gridWidth, gridHeight)
+    cx = floor((pt(1) - margin) / cellSize) + 1;
+    cy = floor((pt(2) - margin) / cellSize) + 1;
+    cx = min(max(cx, 1), gridWidth);
+    cy = min(max(cy, 1), gridHeight);
+end
+
+function conflict = has_neighbor_conflict(candidate, cx, cy, grid, points, radius)
+    minCx = max(1, cx - 2);
+    maxCx = min(size(grid, 2), cx + 2);
+    minCy = max(1, cy - 2);
+    maxCy = min(size(grid, 1), cy + 2);
+
+    radiusSq = radius^2;
+    conflict = false;
+    for gy = minCy:maxCy
+        for gx = minCx:maxCx
+            sampleIdx = grid{gy, gx};
+            if isempty(sampleIdx)
+                continue;
+            end
+            neighbor = points(sampleIdx, :);
+            delta = neighbor - candidate;
+            if sum(delta.^2) < radiusSq
+                conflict = true;
+                return;
+            end
         end
     end
 end
@@ -2486,4 +2825,234 @@ function offsets = compute_subpixel_offsets(quad, imageSize)
         offsets(i, 1) = cx - cx_int;  % dx
         offsets(i, 2) = cy - cy_int;  % dy
     end
+end
+
+%% -------------------------------------------------------------------------
+%% Coordinate Transformation Helpers
+%% -------------------------------------------------------------------------
+
+function entries = read_rectangular_crop_coordinates(coordPath)
+    % Read stage 2 rectangular crop coordinates with auto-format detection
+    % Returns struct array with fields: imageBase, x, y, w, h, rotation, polygon
+    entries = struct('imageBase', '', 'x', [], 'y', [], 'w', [], 'h', [], 'rotation', [], 'polygon', []);
+    entries = entries([]);
+
+    if ~isfile(coordPath)
+        return;
+    end
+
+    fid = fopen(coordPath, 'rt');
+    if fid == -1
+        return;
+    end
+    cleaner = onCleanup(@() fclose(fid));
+
+    % Read entire file
+    allText = textscan(fid, '%s', 'Delimiter', '\n', 'WhiteSpace', '');
+    lines = allText{1};
+
+    if isempty(lines)
+        return;
+    end
+
+    % Detect coordinate format from first line
+    [isRectWH, isPoly4, hasHeader] = detect_rectangular_format(lines{1});
+
+    % Skip header if detected
+    startIdx = 1;
+    if hasHeader
+        startIdx = 2;
+    end
+
+    if startIdx > numel(lines)
+        return;
+    end
+
+    nLines = numel(lines) - startIdx + 1;
+    tmp(nLines) = struct('imageBase', '', 'x', [], 'y', [], 'w', [], 'h', [], 'rotation', [], 'polygon', []);
+    k = 0;
+
+    % Parse rectangular format (image x y width height [rotation])
+    if isRectWH
+        for i = startIdx:numel(lines)
+            ln = strtrim(lines{i});
+            if isempty(ln)
+                continue;
+            end
+            parts = strsplit(ln);
+            if numel(parts) < 5
+                continue;
+            end
+            nums = str2double(parts(2:end));
+            if numel(nums) < 4 || any(isnan(nums(1:4)))
+                continue;
+            end
+            k = k + 1;
+            tmp(k).imageBase = strip_extension(parts{1});
+            tmp(k).x = round(nums(1));
+            tmp(k).y = round(nums(2));
+            tmp(k).w = round(nums(3));
+            tmp(k).h = round(nums(4));
+            if numel(nums) >= 5 && ~isnan(nums(5))
+                tmp(k).rotation = nums(5);
+            else
+                tmp(k).rotation = 0;
+            end
+        end
+        if k > 0
+            entries = tmp(1:k);
+            return;
+        end
+    end
+
+    % Parse polygon format (image x1 y1 x2 y2 x3 y3 x4 y4)
+    if isPoly4
+        for i = startIdx:numel(lines)
+            ln = strtrim(lines{i});
+            if isempty(ln)
+                continue;
+            end
+            parts = strsplit(ln);
+            if numel(parts) < 9
+                continue;
+            end
+            nums = str2double(parts(2:end));
+            if numel(nums) < 8
+                continue;
+            end
+            k = k + 1;
+            tmp(k).imageBase = strip_extension(parts{1});
+            P = [nums(1) nums(2); nums(3) nums(4); nums(5) nums(6); nums(7) nums(8)];
+            tmp(k).polygon = round(P);
+            % Compute axis-aligned bounding box
+            minx = min(tmp(k).polygon(:, 1));
+            maxx = max(tmp(k).polygon(:, 1));
+            miny = min(tmp(k).polygon(:, 2));
+            maxy = max(tmp(k).polygon(:, 2));
+            tmp(k).x = minx;
+            tmp(k).y = miny;
+            tmp(k).w = maxx - minx;
+            tmp(k).h = maxy - miny;
+            tmp(k).rotation = 0;
+        end
+        if k > 0
+            entries = tmp(1:k);
+            return;
+        end
+    end
+
+    % Fallback: assume x y width height format without header
+    for i = startIdx:numel(lines)
+        ln = strtrim(lines{i});
+        if isempty(ln)
+            continue;
+        end
+        parts = strsplit(ln);
+        if numel(parts) < 5
+            continue;
+        end
+        nums = str2double(parts(2:end));
+        if numel(nums) < 4 || any(isnan(nums(1:4)))
+            continue;
+        end
+        k = k + 1;
+        tmp(k).imageBase = strip_extension(parts{1});
+        tmp(k).x = round(nums(1));
+        tmp(k).y = round(nums(2));
+        tmp(k).w = round(nums(3));
+        tmp(k).h = round(nums(4));
+        if numel(nums) >= 5 && ~isnan(nums(5))
+            tmp(k).rotation = nums(5);
+        else
+            tmp(k).rotation = 0;
+        end
+    end
+
+    if k == 0
+        entries = entries([]);
+    else
+        entries = tmp(1:k);
+    end
+end
+
+function [isRectWH, isPoly4, hasHeader] = detect_rectangular_format(firstLine)
+    % Detect rectangular coordinate file format from header line
+    % Returns:
+    %   isRectWH - true if format is "image x y width height [rotation]"
+    %   isPoly4  - true if format is "image x1 y1 x2 y2 x3 y3 x4 y4"
+    %   hasHeader - true if first line is a header (not data)
+    lowerHead = lower(strtrim(firstLine));
+    isRectWH = contains(lowerHead, 'image') && ...
+               contains(lowerHead, 'width') && contains(lowerHead, 'height');
+    isPoly4  = contains(lowerHead, 'x1') && contains(lowerHead, 'y1') && ...
+               contains(lowerHead, 'x4') && contains(lowerHead, 'y4') && ...
+               ~contains(lowerHead, 'concentration');
+    hasHeader = isRectWH || isPoly4;
+end
+
+function s = strip_extension(nameOrPath)
+    % Remove file extension from filename or path
+    [~, s, ~] = fileparts(nameOrPath);
+end
+
+function transformedEntries = apply_crop_transforms(polygonEntries, cropEntries)
+    % Transform polygon coordinates from strip-space to original-image-space
+    % Uses stage 2 crop coordinates to reverse the crop transformation
+
+    % Build lookup map: imageBase -> cropEntry
+    cropMap = containers.Map('KeyType', 'char', 'ValueType', 'any');
+    for i = 1:numel(cropEntries)
+        cropMap(cropEntries(i).imageBase) = cropEntries(i);
+    end
+
+    % Transform each polygon entry
+    transformedEntries = polygonEntries;
+    for i = 1:numel(polygonEntries)
+        imgBase = strip_extension(polygonEntries(i).image);
+
+        % Find matching crop entry
+        if ~cropMap.isKey(imgBase)
+            warning('augmentDataset:noCropMatch', ...
+                'No stage 2 crop found for %s. Using original coordinates.', polygonEntries(i).image);
+            continue;
+        end
+
+        cropEntry = cropMap(imgBase);
+
+        % Transform polygon vertices
+        transformedVertices = transform_polygon_to_original_space(polygonEntries(i).vertices, cropEntry);
+        transformedEntries(i).vertices = transformedVertices;
+    end
+end
+
+function transformedVertices = transform_polygon_to_original_space(vertices, cropEntry)
+    % Transform polygon vertices from strip-space to original-image-space
+    % Applies:
+    %   1. Translation by crop offset (x, y)
+    %   2. Inverse rotation if crop was rotated
+
+    % Translate by crop offset
+    transformed = vertices + repmat([cropEntry.x, cropEntry.y], size(vertices, 1), 1);
+
+    % Apply inverse rotation if present
+    if isfield(cropEntry, 'rotation') && ~isempty(cropEntry.rotation) && cropEntry.rotation ~= 0
+        % Rotation center is the crop origin
+        centerX = cropEntry.x + cropEntry.w / 2;
+        centerY = cropEntry.y + cropEntry.h / 2;
+
+        % Convert rotation angle to radians (inverse rotation)
+        angleRad = -deg2rad(cropEntry.rotation);
+
+        % Build rotation matrix
+        cosTheta = cos(angleRad);
+        sinTheta = sin(angleRad);
+        rotMat = [cosTheta, -sinTheta; sinTheta, cosTheta];
+
+        % Translate to origin, rotate, translate back
+        centered = transformed - repmat([centerX, centerY], size(transformed, 1), 1);
+        rotated = (rotMat * centered')';
+        transformed = rotated + repmat([centerX, centerY], size(transformed, 1), 1);
+    end
+
+    transformedVertices = round(transformed);
 end
