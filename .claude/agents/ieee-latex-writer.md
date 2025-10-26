@@ -2,6 +2,7 @@
 name: ieee-latex-writer
 description: Specialized IEEE LaTeX writer for microPAD colorimetric analysis research papers following established publication patterns from Izmir Katip Celebi University research group
 tools: Read, Glob, Grep
+color: white
 parameters:
   - name: authors
     description: "List of author names and emails in format: 'FirstName LastName <email@domain.com>; FirstName2 LastName2 <email2@domain.com>'"

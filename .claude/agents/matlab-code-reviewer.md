@@ -2,6 +2,7 @@
 name: matlab-code-reviewer
 description: Review MATLAB code for quality, style, and best practices
 tools: Read, Glob, Grep, Bash
+color: yellow
 ---
 
 # MATLAB Code Reviewer

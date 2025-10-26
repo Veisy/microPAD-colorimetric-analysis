@@ -2,6 +2,7 @@
 name: git-commit-manager
 description: Manage git commits with organized, clear commit messages
 tools: Bash, Read, Glob, Grep
+color: red
 ---
 
 # Git Commit Manager
