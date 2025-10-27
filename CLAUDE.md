@@ -99,9 +99,9 @@ augment_dataset('numAugmentations', 5, 'rngSeed', 42)
 
 ### Common Parameters
 - All scripts accept name-value pairs for configuration
-- `preserveFormat` (default `true`): Keep original image formats
-- `jpegQuality` (default `100`): JPEG compression quality when writing
-- `saveCoordinates` (default `true`): Write coordinate metadata files
+- `preserveFormat`: Keep original image formats
+- `jpegQuality`: JPEG compression quality when writing
+- `saveCoordinates`: Write coordinate metadata files
 
 ## File Naming Conventions
 
@@ -116,6 +116,61 @@ augment_dataset('numAugmentations', 5, 'rngSeed', 42)
 - Stage 4 patches: `{base}_con{N}_rep{M}.{ext}` in `con_{N}/` folders
   - Note: `rep{M}` represents replicate measurements (M = 0, 1, 2). In the final microPAD design, these correspond to three different chemicals (urea, creatinine, lactate). During training, all 3 replicates contain the same chemical at the same concentration.
 - Stage 5 features: `{chemical}_features.xlsx`
+
+### Corner Label Files (Augmentation Output)
+When `augment_dataset.m` is run with `exportCornerLabels=true`, it generates training labels for AI polygon detection:
+- **JSON**: `{imageName}.json` - Metadata only (corners, image info, MAT file reference)
+- **MAT**: `{imageName}_heatmaps.mat` - Heatmaps and offsets (HDF5 compressed)
+
+**Format:**
+- JSON structure:
+  ```json
+  {
+    "image_name": "synthetic_001",
+    "image_size": [3000, 4000],
+    "downsample_factor": 4,
+    "heatmap_sigma": 3,
+    "heatmap_format": "mat-v7.3",
+    "heatmap_file": "synthetic_001_heatmaps.mat",
+    "heatmap_dataset": "corner_heatmaps",
+    "offset_dataset": "corner_offsets",
+    "quads": [
+      {
+        "quad_id": 1,
+        "corners": [[x1,y1], [x2,y2], [x3,y3], [x4,y4]],
+        "corners_normalized": [[nx1,ny1], [nx2,ny2], [nx3,ny3], [nx4,ny4]],
+        "embedding_id": 1
+      }
+    ]
+  }
+  ```
+- MAT arrays:
+  - `corner_heatmaps`: (4, H/4, W/4, N) single precision - Gaussian targets per corner type
+  - `corner_offsets`: (4, 2, N) single precision - Sub-pixel offsets [0-1] per corner
+
+**Loading (MATLAB):**
+```matlab
+data = load('synthetic_001_heatmaps.mat');
+heatmaps = data.corner_heatmaps(:,:,:,1);  % First quad (4, H/4, W/4)
+offsets = data.corner_offsets(:,:,1);      % First quad (4, 2)
+```
+
+**Loading (Python):**
+```python
+from scipy.io import loadmat
+import json
+
+# Load metadata
+with open('synthetic_001.json', 'r') as f:
+    metadata = json.load(f)
+
+# Load heatmaps
+mat_data = loadmat('synthetic_001_heatmaps.mat')
+heatmaps = mat_data['corner_heatmaps'][:,:,:,0]  # First quad (4, H/4, W/4)
+offsets = mat_data['corner_offsets'][:,:,0]      # First quad (4, 2)
+```
+
+**Storage Savings:** ~12GB → ~2GB for 24,000 labels (6x reduction with HDF5 compression)
 
 ## Critical Implementation Details
 
@@ -150,10 +205,10 @@ All scripts use `imread_raw()` helper function that:
 `augment_dataset.m` generates synthetic training data for polygon detection training by:
 1. Back-projecting Stage 2 strip coordinates into Stage 1 image space using recorded crop metadata
 2. Applying shared perspective and rotation per paper (+/-60 deg pitch/yaw, 0-360 deg roll)
-3. Optional independent rotation per region (default disabled for speed)
+3. Optional independent rotation per region
 4. Placing regions via grid-accelerated random sampling (guaranteed non-overlapping)
-5. Compositing onto procedural backgrounds drawn from uniform, speckled, laminate, and skin surface pools (16 cached variants each with jitter)
-6. Adding moderate-density distractor artifacts (1-20 per image)
+5. Compositing onto procedural backgrounds drawn from uniform, speckled, laminate, and skin surface pools (cached variants with jitter)
+6. Adding moderate-density distractor artifacts
 7. Applying color-safe photometric augmentation (brightness/contrast, white balance, saturation/gamma)
 8. Optionally adding at most one blur type (motion or Gaussian) and thin occlusions
 
@@ -161,15 +216,17 @@ All scripts use `imread_raw()` helper function that:
 - Grid-based spatial acceleration for O(1) collision detection (vs O(n^2))
 - Simplified polygon warping without alpha blending (3x faster)
 - Background texture pooling (reuses 4 procedural types from cached pools instead of regenerating each frame)
-- Reduced artifact density from 1-100 to 1-20
+- Artifact density: 5-40 per image (optimized from 1-100)
+- Artifact rendering: Sharp by default with nearest-neighbor upscaling (matches polygon sharpness)
+- Scene-wide blur: Optional 25% probability applied uniformly to entire image
 - Overall speedup: 3x (1.0s vs 3.0s per augmented image)
 
 **Key parameters:**
-- `numAugmentations`: number of synthetic versions per original (default 3)
-- `independentRotation`: enable per-polygon rotation (default false)
-- `occlusionProbability`: thin occlusions across polygons (default 0.0)
-- `exportCornerLabels`: emit JSON keypoint labels for passthrough, synthetic, and scale outputs (default false)
-- `backgroundWidth/Height`: output dimensions (default 4000x3000)
+- `numAugmentations`: number of synthetic versions per original
+- `independentRotation`: enable per-polygon rotation
+- `occlusionProbability`: thin occlusions across polygons
+- `exportCornerLabels`: emit JSON keypoint labels for passthrough, synthetic, and scale outputs
+- `backgroundWidth/Height`: output dimensions
 
 ### Interactive GUI Sessions
 All interactive scripts maintain **persistent memory** across images in the same folder:

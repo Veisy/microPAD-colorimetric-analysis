@@ -321,15 +321,18 @@ Augmentation **multiplies the training dataset** by 5-10x without requiring addi
 - **Skin tones** - Human hand/arm backgrounds (HSV-based)
 - **Texture pooling** - 16 cached variants per surface type with random shifts, flips, and scale jitter to avoid regeneration artifacts
 
-**Distractor Artifacts (1-20 per image)**
+**Distractor Artifacts (5-40 per image)**
 - **Shapes**: Ellipses, rectangles, quadrilaterals, triangles, lines
-- **Sizes**: 1-100% of image diagonal (allows partial occlusions)
+- **Sizes**: 1-75% of image diagonal (allows partial occlusions)
 - **Placement**: Unconstrained (can extend beyond frame)
-- **Purpose**: Train polygon detector to ignore false positives
+- **Sharpness**: Sharp by default, matching concentration rectangle behavior
+- **Rendering**: Nearest-neighbor interpolation to preserve crisp edges
+- **Purpose**: Train polygon detector to ignore false positives while maintaining realistic appearance
 
 **Blur and Occlusions (Optional)**
+- **Scene-wide blur** - Applied to entire image (polygons + artifacts) when enabled
 - **Motion blur** - Camera shake simulation (15% probability)
-- **Gaussian blur** - Focus variation (25% probability)
+- **Gaussian blur** - Focus variation (25% probability, sigma 0.25-0.65px)
 - **Thin occlusions** - Hair/strap-like artifacts across test zones (disabled by default)
 
 ---

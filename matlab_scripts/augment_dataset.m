@@ -46,7 +46,6 @@ function augment_dataset(varargin)
     % - 'photometricAugmentation' (logical, default true): enable color/lighting variation
     % - 'blurProbability' (0-1, default 0.25): fraction of samples with slight blur
     % - 'exportCornerLabels' (logical, default false): export corner keypoint labels as JSON
-    % - 'papersPerScene' (positive integer, default 1): papers combined per scene (reserved for future use)
     %
 % Examples:
 % augment_dataset('numAugmentations', 5, 'rngSeed', 42)  % Copies real data + 5 synthetic scenes
@@ -82,19 +81,11 @@ function augment_dataset(varargin)
 
     % Background generation parameters
     TEXTURE = struct( ...
-        'woodBaseRGB', [180, 170, 150], ...
-        'woodVariation', 20, ...
         'speckleHighFreq', 35, ...
         'speckleLowFreq', 20, ...
-        'perlinGridScale', 80, ...
-        'perlinAmplitude', 50, ...
         'uniformBaseRGB', [220, 218, 215], ...
         'uniformVariation', 15, ...
         'uniformNoiseRange', [10, 25], ...
-        'tileBaseRGB', [200, 195, 185], ...
-        'tileVariation', 20, ...
-        'tileSpacingRange', [100, 200], ...
-        'groutWidthRange', [2, 5], ...
         'poolSize', 16, ...
         'poolRefreshInterval', 25, ...
         'poolShiftPixels', 48, ...
@@ -103,44 +94,22 @@ function augment_dataset(varargin)
 
     % Artifact generation parameters
     ARTIFACTS = struct( ...
-        'countRange', [5, 30], ...
-        'cornerProximityBias', 0.3, ...
-        'cornerExclusionRadius', 8, ...
-        'sizeRangePercent', [0.01, 1.0], ...
-        'probability', 1.0, ...
+        'unitMaskSize', 64, ...          % Unit-square resolution for artifact masks
+        'countRange', [5, 40], ...
+        'sizeRangePercent', [0.01, 0.75], ...
         'minSizePixels', 3, ...
         'overhangMargin', 0.5, ...
         'lineWidthRatio', 0.02, ...
         'lineRotationPadding', 10, ...
         'ellipseRadiusARange', [0.4, 0.7], ...
         'ellipseRadiusBRange', [0.3, 0.6], ...
-        'ellipseBlurSigma', 1.5, ...
         'rectangleSizeRange', [0.5, 0.9], ...
-        'rectangleBlurSigma', 2.0, ...
         'quadSizeRange', [0.5, 0.9], ...
         'quadPerturbation', 0.15, ...
-        'quadBlurSigma', 1.5, ...
         'triangleSizeRange', [0.6, 0.9], ...
-        'triangleBlurSigma', 1.2, ...
-        'lineBlurSigma', 0.8, ...
         'lineIntensityRange', [-80, -40], ...
         'blobDarkIntensityRange', [-60, -30], ...
         'blobLightIntensityRange', [20, 50]);
-
-    % === CORNER ROBUSTNESS AUGMENTATION ===
-    CORNER_OCCLUSION = struct( ...
-        'probability', 0.15, ...
-        'occlusionTypes', {{'finger', 'shadow', 'small_object'}}, ...
-        'sizeRange', [15, 40], ...
-        'maxCornersPerPolygon', 2, ...
-        'intensityRange', [-80, -30]);
-
-    EDGE_DEGRADATION = struct( ...
-        'probability', 0.25, ...
-        'blurTypes', {{'gaussian', 'motion'}}, ...
-        'blurRadiusRange', [1.5, 4.0], ...
-        'affectsEdgesOnly', true, ...
-        'edgeWidth', 10);
 
     % Polygon placement parameters
     PLACEMENT = struct( ...
@@ -164,11 +133,11 @@ function augment_dataset(varargin)
     addParameter(parser, 'blurProbability', 0.25, @(n) validateattributes(n, {'numeric'}, {'scalar','>=',0,'<=',1}));
     addParameter(parser, 'motionBlurProbability', 0.15, @(n) validateattributes(n, {'numeric'}, {'scalar','>=',0,'<=',1}));
     addParameter(parser, 'occlusionProbability', 0.0, @(n) validateattributes(n, {'numeric'}, {'scalar','>=',0,'<=',1}));
-    addParameter(parser, 'independentRotation', false, @islogical);
-    addParameter(parser, 'multiScale', false, @islogical);
+    addParameter(parser, 'independentRotation', true, @islogical);
+    addParameter(parser, 'multiScale', true, @islogical);
     addParameter(parser, 'scales', [640, 800, 1024], @(x) validateattributes(x, {'numeric'}, {'vector', 'positive', 'integer'}));
     addParameter(parser, 'extremeCasesProbability', 0.10, @(x) validateattributes(x, {'numeric'}, {'scalar', '>=', 0, '<=', 1}));
-    addParameter(parser, 'exportCornerLabels', false, @islogical);
+    addParameter(parser, 'exportCornerLabels', true, @islogical);
 
     parse(parser, varargin{:});
     opts = parser.Results;
@@ -218,8 +187,6 @@ function augment_dataset(varargin)
     cfg.texture = TEXTURE;
     cfg.artifacts = ARTIFACTS;
     cfg.placement = PLACEMENT;
-    cfg.cornerOcclusion = CORNER_OCCLUSION;
-    cfg.edgeDegradation = EDGE_DEGRADATION;
     cfg.multiScale = opts.multiScale;
     cfg.scales = opts.scales;
     cfg.extremeCasesProbability = opts.extremeCasesProbability;
@@ -271,14 +238,10 @@ function augment_dataset(varargin)
     fprintf('\n=== Augmentation Configuration ===\n');
     fprintf('Camera perspective: %.0f° max angle, X=[%.1f,%.1f], Y=[%.1f,%.1f], Z=[%.1f,%.1f]\n', ...
         cfg.camera.maxAngleDeg, cfg.camera.xRange, cfg.camera.yRange, cfg.camera.zRange);
-    fprintf('Corner occlusion: %.0f%% probability, max %d corners/polygon\n', ...
-        cfg.cornerOcclusion.probability*100, cfg.cornerOcclusion.maxCornersPerPolygon);
-    fprintf('Edge degradation: %.0f%% probability\n', cfg.edgeDegradation.probability*100);
     fprintf('Multi-scale: %s (scales: %s)\n', ...
         string(cfg.multiScale), strjoin(string(cfg.scales), ', '));
-    fprintf('Artifacts: %d-%d per image, %.0f%% near corners\n', ...
-        cfg.artifacts.countRange(1), cfg.artifacts.countRange(2), ...
-        cfg.artifacts.cornerProximityBias*100);
+    fprintf('Artifacts: %d-%d per image\n', ...
+        cfg.artifacts.countRange(1), cfg.artifacts.countRange(2));
     fprintf('Extreme cases: %.0f%% probability\n', cfg.extremeCasesProbability*100);
     fprintf('Augmentations per paper: %d\n', cfg.numAugmentations);
     widthStr = 'source width';
@@ -536,7 +499,7 @@ function emit_passthrough_sample(paperBase, imgPath, stage1Img, polygons, ellips
 
                 s3Count = s3Count + 1;
                 if s3Count > numel(stage3Coords)
-                    stage3Coords{end + numel(ellipseList)} = [];
+                    stage3Coords{2 * numel(stage3Coords)} = [];
                 end
                 stage3Coords{s3Count} = struct( ...
                     'image', polygonFileName, ...
@@ -867,7 +830,7 @@ function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap
                 % Record stage 3 coordinates (ellipse in polygon-crop space)
                 s3Count = s3Count + 1;
                 if s3Count > numel(stage3Coords)
-                    stage3Coords{end + maxPolygons} = [];
+                    stage3Coords{2 * numel(stage3Coords)} = [];
                 end
                 stage3Coords{s3Count} = struct( ...
                     'image', polygonFileName, ...
@@ -967,40 +930,55 @@ end
 %% =========================================================================
 
 function [content, bbox] = extract_polygon_masked(img, vertices)
-    % Extract polygon region with masking to avoid black pixels
-    [h, w, ~] = size(img);
+    % Extract polygon region with masking to avoid black pixels.
+    % Optimization: restrict poly2mask to the local bbox instead of the full frame.
 
-    % Compute polygon mask in full image coordinates
-    maskFull = poly2mask(vertices(:,1), vertices(:,2), h, w);
-    cols = any(maskFull, 1);
-    rows = any(maskFull, 2);
-    if ~any(cols) || ~any(rows)
-        content = zeros(0, 0, size(img, 3), 'like', img);
+    [imgH, imgW, numChannels] = size(img);
+
+    if isempty(vertices) || any(~isfinite(vertices(:)))
+        content = zeros(0, 0, numChannels, 'like', img);
         bbox = [1, 1, 0, 0];
         return;
     end
 
-    % Bounding box (inclusive indices)
-    minX = find(cols, 1, 'first');
-    maxX = find(cols, 1, 'last');
-    minY = find(rows, 1, 'first');
-    maxY = find(rows, 1, 'last');
+    minX = floor(min(vertices(:,1)));
+    maxX = ceil(max(vertices(:,1)));
+    minY = floor(min(vertices(:,2)));
+    maxY = ceil(max(vertices(:,2)));
 
-    bbox = [minX, minY, maxX - minX + 1, maxY - minY + 1];
+    minX = max(1, minX);
+    minY = max(1, minY);
+    maxX = min(imgW, maxX);
+    maxY = min(imgH, maxY);
 
-    % Extract bbox region
+    if maxX < minX || maxY < minY
+        content = zeros(0, 0, numChannels, 'like', img);
+        bbox = [1, 1, 0, 0];
+        return;
+    end
+
+    bboxWidth = maxX - minX + 1;
+    bboxHeight = maxY - minY + 1;
+
+    relVerts = vertices - [minX - 1, minY - 1];
+    relVerts(:,1) = min(max(relVerts(:,1), 1), bboxWidth);
+    relVerts(:,2) = min(max(relVerts(:,2), 1), bboxHeight);
+
+    mask = poly2mask(relVerts(:,1), relVerts(:,2), bboxHeight, bboxWidth);
+    if ~any(mask(:))
+        content = zeros(0, 0, numChannels, 'like', img);
+        bbox = [1, 1, 0, 0];
+        return;
+    end
+
     bboxContent = img(minY:maxY, minX:maxX, :);
-
-    % Slice polygon mask relative to bbox
-    mask = maskFull(minY:maxY, minX:maxX);
-
-    % Apply mask using input image type
-    if size(bboxContent, 3) == 3
-        mask3d = repmat(mask, [1, 1, 3]);
-        content = bboxContent .* cast(mask3d, 'like', bboxContent);
+    if numChannels == 3
+        content = bboxContent .* cast(repmat(mask, [1, 1, 3]), 'like', bboxContent);
     else
         content = bboxContent .* cast(mask, 'like', bboxContent);
     end
+
+    bbox = [minX, minY, bboxWidth, bboxHeight];
 end
 
 function augImg = transform_polygon_content(content, origVerts, augVerts, bbox)
@@ -1377,8 +1355,13 @@ end
 
 function bg = add_sparse_artifacts(bg, width, height, artifactCfg)
     % Add variable-density artifacts anywhere on background for robust detection training
+    %
+    % OPTIMIZATION: Uses unit-square normalization (default 64x64 defined in artifactCfg.unitMaskSize)
+    % to eliminate multi-GB meshgrid allocations. Each artifact is synthesized in normalized space,
+    % then upscaled with nearest-neighbor interpolation, cutting peak memory from multi-GB to O(unitMaskSize^2).
+    %
     % Artifacts: rectangles, quadrilaterals, triangles, ellipses, lines
-    % Count: 1-100 (variable complexity per image)
+    % Count: configurable via artifactCfg.countRange (default 5-30)
     % Size: 1-100% of image diagonal (allows artifacts larger than frame)
     % Placement: unconstrained (artifacts can extend beyond boundaries for uniform spatial distribution)
 
@@ -1394,6 +1377,17 @@ function bg = add_sparse_artifacts(bg, width, height, artifactCfg)
 
     % Image diagonal for relative sizing (allows artifacts larger than image dimensions)
     diagSize = sqrt(width^2 + height^2);
+
+    if isfield(artifactCfg, 'unitMaskSize') && ~isempty(artifactCfg.unitMaskSize)
+        unitMaskSize = max(8, round(double(artifactCfg.unitMaskSize)));
+    else
+        unitMaskSize = 64;
+    end
+    unitCoords = linspace(0, 1, unitMaskSize);
+    [unitGridX, unitGridY] = meshgrid(unitCoords, unitCoords);
+    unitCenteredX = unitGridX - 0.5;
+    unitCenteredY = unitGridY - 0.5;
+    unitScale = max(1, unitMaskSize - 1);
 
     for i = 1:numArtifacts
         % Select artifact type (equal probability)
@@ -1432,107 +1426,90 @@ function bg = add_sparse_artifacts(bg, width, height, artifactCfg)
         x = randi([xMin, xMax]);
         y = randi([yMin, yMax]);
 
-        % Create artifact mask based on type
-        if strcmp(artifactType, 'ellipse')
-            % Elliptical blob
-            [X, Y] = meshgrid(1:artifactSize, 1:artifactSize);
-            centerX = artifactSize / 2;
-            centerY = artifactSize / 2;
-            radiusA = artifactSize / 2 * (artifactCfg.ellipseRadiusARange(1) + rand() * diff(artifactCfg.ellipseRadiusARange));
-            radiusB = artifactSize / 2 * (artifactCfg.ellipseRadiusBRange(1) + rand() * diff(artifactCfg.ellipseRadiusBRange));
-            angle = rand() * pi;
-            xRot = (X - centerX) * cos(angle) - (Y - centerY) * sin(angle);
-            yRot = (X - centerX) * sin(angle) + (Y - centerY) * cos(angle);
-            mask = (xRot / radiusA).^2 + (yRot / radiusB).^2 <= 1;
-            mask = imgaussfilt(single(mask), artifactCfg.ellipseBlurSigma);
+        % Create artifact mask based on type using unit-square normalization
+        unitMask = [];
+        switch artifactType
+            case 'ellipse'
+                radiusAFraction = 0.5 * (artifactCfg.ellipseRadiusARange(1) + rand() * diff(artifactCfg.ellipseRadiusARange));
+                radiusBFraction = 0.5 * (artifactCfg.ellipseRadiusBRange(1) + rand() * diff(artifactCfg.ellipseRadiusBRange));
+                radiusAFraction = max(radiusAFraction, 1e-3);
+                radiusBFraction = max(radiusBFraction, 1e-3);
+                angle = rand() * pi;
+                cosTheta = cos(angle);
+                sinTheta = sin(angle);
+                xRot = unitCenteredX * cosTheta - unitCenteredY * sinTheta;
+                yRot = unitCenteredX * sinTheta + unitCenteredY * cosTheta;
+                unitMask = single((xRot / radiusAFraction).^2 + (yRot / radiusBFraction).^2 <= 1);
 
-        elseif strcmp(artifactType, 'rectangle')
-            % Rectangular blob (paper scrap, label)
-            [X, Y] = meshgrid(1:artifactSize, 1:artifactSize);
-            centerX = artifactSize / 2;
-            centerY = artifactSize / 2;
-            rectWidth = artifactSize * (artifactCfg.rectangleSizeRange(1) + rand() * diff(artifactCfg.rectangleSizeRange));
-            rectHeight = artifactSize * (artifactCfg.rectangleSizeRange(1) + rand() * diff(artifactCfg.rectangleSizeRange));
-            angle = rand() * pi;  % Random rotation
+            case 'rectangle'
+                rectWidthFraction = artifactCfg.rectangleSizeRange(1) + rand() * diff(artifactCfg.rectangleSizeRange);
+                rectHeightFraction = artifactCfg.rectangleSizeRange(1) + rand() * diff(artifactCfg.rectangleSizeRange);
+                rectHalfWidth = max(rectWidthFraction / 2, 1e-3);
+                rectHalfHeight = max(rectHeightFraction / 2, 1e-3);
+                angle = rand() * pi;
+                cosTheta = cos(angle);
+                sinTheta = sin(angle);
+                xRot = unitCenteredX * cosTheta - unitCenteredY * sinTheta;
+                yRot = unitCenteredX * sinTheta + unitCenteredY * cosTheta;
+                unitMask = single((abs(xRot) <= rectHalfWidth) & (abs(yRot) <= rectHalfHeight));
 
-            % Rotate coordinates
-            xRot = (X - centerX) * cos(angle) - (Y - centerY) * sin(angle);
-            yRot = (X - centerX) * sin(angle) + (Y - centerY) * cos(angle);
-            mask = (abs(xRot) <= rectWidth/2) & (abs(yRot) <= rectHeight/2);
-            mask = imgaussfilt(single(mask), artifactCfg.rectangleBlurSigma);
+            case 'quadrilateral'
+                baseWidthFraction = artifactCfg.quadSizeRange(1) + rand() * diff(artifactCfg.quadSizeRange);
+                baseHeightFraction = artifactCfg.quadSizeRange(1) + rand() * diff(artifactCfg.quadSizeRange);
+                perturbFraction = artifactCfg.quadPerturbation;
+                halfWidth = max(baseWidthFraction / 2, 1e-3);
+                halfHeight = max(baseHeightFraction / 2, 1e-3);
+                verticesNorm = [
+                    0.5 - halfWidth + (rand()-0.5) * perturbFraction, 0.5 - halfHeight + (rand()-0.5) * perturbFraction;
+                    0.5 + halfWidth + (rand()-0.5) * perturbFraction, 0.5 - halfHeight + (rand()-0.5) * perturbFraction;
+                    0.5 + halfWidth + (rand()-0.5) * perturbFraction, 0.5 + halfHeight + (rand()-0.5) * perturbFraction;
+                    0.5 - halfWidth + (rand()-0.5) * perturbFraction, 0.5 + halfHeight + (rand()-0.5) * perturbFraction
+                ];
+                verticesNorm = min(max(verticesNorm, 0), 1);
+                verticesPix = 1 + unitScale * verticesNorm;
+                polyMask = poly2mask(verticesPix(:,1), verticesPix(:,2), unitMaskSize, unitMaskSize);
+                if any(polyMask(:))
+                    unitMask = single(polyMask);
+                end
 
-        elseif strcmp(artifactType, 'quadrilateral')
-            % Irregular quadrilateral (distorted rectangle - similar to perspective-transformed rectangles)
-            centerX = artifactSize / 2;
-            centerY = artifactSize / 2;
-            baseWidth = artifactSize * (artifactCfg.quadSizeRange(1) + rand() * diff(artifactCfg.quadSizeRange));
-            baseHeight = artifactSize * (artifactCfg.quadSizeRange(1) + rand() * diff(artifactCfg.quadSizeRange));
+            case 'triangle'
+                baseSizeFraction = artifactCfg.triangleSizeRange(1) + rand() * diff(artifactCfg.triangleSizeRange);
+                radius = max(baseSizeFraction / 2, 1e-3);
+                angle = rand() * 2 * pi;
+                verticesNorm = [
+                    0.5 + radius * cos(angle),           0.5 + radius * sin(angle);
+                    0.5 + radius * cos(angle + 2*pi/3),  0.5 + radius * sin(angle + 2*pi/3);
+                    0.5 + radius * cos(angle + 4*pi/3),  0.5 + radius * sin(angle + 4*pi/3)
+                ];
+                verticesNorm = min(max(verticesNorm, 0), 1);
+                verticesPix = 1 + unitScale * verticesNorm;
+                polyMask = poly2mask(verticesPix(:,1), verticesPix(:,2), unitMaskSize, unitMaskSize);
+                if any(polyMask(:))
+                    unitMask = single(polyMask);
+                end
 
-            % Create irregular quadrilateral by perturbing rectangle corners
-            perturbation = artifactCfg.quadPerturbation * artifactSize;
-            vertices = [
-                centerX - baseWidth/2 + (rand()-0.5)*perturbation, centerY - baseHeight/2 + (rand()-0.5)*perturbation;
-                centerX + baseWidth/2 + (rand()-0.5)*perturbation, centerY - baseHeight/2 + (rand()-0.5)*perturbation;
-                centerX + baseWidth/2 + (rand()-0.5)*perturbation, centerY + baseHeight/2 + (rand()-0.5)*perturbation;
-                centerX - baseWidth/2 + (rand()-0.5)*perturbation, centerY + baseHeight/2 + (rand()-0.5)*perturbation
-            ];
+            otherwise  % 'line'
+                angle = rand() * pi;
+                cosTheta = cos(angle);
+                sinTheta = sin(angle);
+                lengthNorm = min(1, lineLength / artifactSize);
+                halfLengthNorm = max(lengthNorm / 2, 1e-3);
+                halfWidthNorm = max(lineWidth / artifactSize, 1 / artifactSize);
+                xRot = unitCenteredX * cosTheta - unitCenteredY * sinTheta;
+                yRot = unitCenteredX * sinTheta + unitCenteredY * cosTheta;
+                lineCore = (abs(xRot) <= halfLengthNorm) & (abs(yRot) <= halfWidthNorm);
+                unitMask = single(lineCore);
+        end
 
-            % Clamp vertices to valid range
-            vertices = max(1, min(artifactSize, vertices));
+        if isempty(unitMask)
+            continue;
+        end
 
-            % Create polygon mask
-            mask = poly2mask(vertices(:,1), vertices(:,2), artifactSize, artifactSize);
-
-            % Skip if polygon is degenerate (empty mask)
-            if ~any(mask(:))
-                continue;
-            end
-
-            mask = imgaussfilt(single(mask), artifactCfg.quadBlurSigma);
-
-        elseif strcmp(artifactType, 'triangle')
-            % Triangle (paper corner, folded edge)
-            centerX = artifactSize / 2;
-            centerY = artifactSize / 2;
-            baseSize = artifactSize * (artifactCfg.triangleSizeRange(1) + rand() * diff(artifactCfg.triangleSizeRange));
-
-            % Random triangle orientation
-            angle = rand() * 2 * pi;
-            vertices = [
-                centerX + baseSize * cos(angle), centerY + baseSize * sin(angle);
-                centerX + baseSize * cos(angle + 2*pi/3), centerY + baseSize * sin(angle + 2*pi/3);
-                centerX + baseSize * cos(angle + 4*pi/3), centerY + baseSize * sin(angle + 4*pi/3)
-            ];
-
-            % Clamp vertices to valid range
-            vertices = max(1, min(artifactSize, vertices));
-
-            % Create polygon mask
-            mask = poly2mask(vertices(:,1), vertices(:,2), artifactSize, artifactSize);
-
-            % Skip if polygon is degenerate (empty mask)
-            if ~any(mask(:))
-                continue;
-            end
-
-            mask = imgaussfilt(single(mask), artifactCfg.triangleBlurSigma);
-
-        else  % 'line'
-            % Thin line (scratch, pen mark, table edge) via distance-to-line mask
-            centerX = artifactSize / 2;
-            centerY = artifactSize / 2;
-            angle = rand() * pi;  % Random orientation
-
-            [Xg, Yg] = meshgrid(1:artifactSize, 1:artifactSize);
-            % Coordinates relative to line center
-            dx = Xg - centerX;
-            dy = Yg - centerY;
-            % Projection along line direction and perpendicular distance
-            tproj =  dx * cos(angle) + dy * sin(angle);
-            dperp = abs(-dx * sin(angle) + dy * cos(angle));
-            % Keep points within the finite segment and within half-width
-            lineCore = (abs(tproj) <= lineLength/2) & (dperp <= lineWidth);
-            mask = imgaussfilt(single(lineCore), artifactCfg.lineBlurSigma);
+        mask = imresize(unitMask, [artifactSize, artifactSize], 'nearest');
+        mask = max(mask, single(0));
+        mask = min(mask, single(1));
+        if ~any(mask(:))
+            continue;
         end
 
         % Random intensity: darker or lighter
@@ -2112,10 +2089,15 @@ function lines = read_coordinate_file_lines(coordPath)
     end
     cleaner = onCleanup(@() fclose(fid));
 
-    % Skip header if present
+    % Skip header if present (header starts with literal word "image")
     headerLine = fgetl(fid);
-    if ~ischar(headerLine) || ~contains(lower(headerLine), 'image concentration')
+    if ~ischar(headerLine)
         fseek(fid, 0, 'bof');
+    else
+        tokens = strsplit(strtrim(headerLine));
+        if isempty(tokens) || ~strcmp(tokens{1}, 'image')
+            fseek(fid, 0, 'bof');
+        end
     end
 
     % Read all non-empty lines
@@ -2159,15 +2141,9 @@ function entries = read_polygon_coordinates(coordPath)
         vertices = reshape(coords, [2, 4])';
 
         count = count + 1;
-        if count > maxEntries
-            entries(count).image = imgName;
-            entries(count).concentration = concentration;
-            entries(count).vertices = vertices;
-        else
-            entries(count) = struct('image', imgName, ...
-                                    'concentration', concentration, ...
-                                    'vertices', vertices);
-        end
+        entries(count) = struct('image', imgName, ...
+                                'concentration', concentration, ...
+                                'vertices', vertices);
     end
 
     entries = entries(1:count);
@@ -2198,23 +2174,13 @@ function entries = read_ellipse_coordinates(coordPath)
         end
 
         count = count + 1;
-        if count > maxEntries
-            entries(count).image = imgName;
-            entries(count).concentration = nums(1);
-            entries(count).replicate = nums(2);
-            entries(count).center = nums(3:4);
-            entries(count).semiMajor = nums(5);
-            entries(count).semiMinor = nums(6);
-            entries(count).rotation = nums(7);
-        else
-            entries(count) = struct('image', imgName, ...
-                                    'concentration', nums(1), ...
-                                    'replicate', nums(2), ...
-                                    'center', nums(3:4), ...
-                                    'semiMajor', nums(5), ...
-                                    'semiMinor', nums(6), ...
-                                    'rotation', nums(7));
-        end
+        entries(count) = struct('image', imgName, ...
+                                'concentration', nums(1), ...
+                                'replicate', nums(2), ...
+                                'center', nums(3:4), ...
+                                'semiMajor', nums(5), ...
+                                'semiMinor', nums(6), ...
+                                'rotation', nums(7));
     end
 
     entries = entries(1:count);
@@ -2638,10 +2604,24 @@ function img = clamp_uint8(img)
 end
 
 function img = apply_motion_blur(img)
-    % Apply slight motion blur with random length and angle
+    % Apply slight motion blur with cached PSFs to avoid redundant kernel generation
+    persistent psf_cache
+    if isempty(psf_cache)
+        psf_cache = containers.Map('KeyType', 'char', 'ValueType', 'any');
+    end
+
     len = 4 + randi(4);            % 5-8 px
     ang = rand() * 180;            % degrees
-    psf = fspecial('motion', len, ang);
+    ang_rounded = round(ang);
+    cache_key = sprintf('%d_%d', len, ang_rounded);
+
+    if isKey(psf_cache, cache_key)
+        psf = psf_cache(cache_key);
+    else
+        psf = fspecial('motion', len, ang_rounded);
+        psf_cache(cache_key) = psf;
+    end
+
     img = imfilter(img, psf, 'replicate');
 end
 
@@ -2711,59 +2691,98 @@ end
 %% =========================================================================
 
 function export_corner_labels(outputDir, imageName, polygons, imageSize)
-    % Export corner labels in keypoint detection format
-    % Format: JSON with corner heatmap targets + sub-pixel offsets + embeddings
+    % Export corner labels with metadata JSON and compressed MAT heatmaps
 
     labelDir = fullfile(outputDir, 'labels');
     if ~isfolder(labelDir), mkdir(labelDir); end
 
     labelPath = fullfile(labelDir, [imageName '.json']);
+    heatmapFileName = [imageName '_heatmaps.mat'];
+    heatmapPath = fullfile(labelDir, heatmapFileName);
+
+    numQuads = numel(polygons);
+    downsampleFactor = 4;
+    heatmapSigma = 3;
+    downsampledHeight = max(1, round(imageSize(1) / downsampleFactor));
+    downsampledWidth = max(1, round(imageSize(2) / downsampleFactor));
+
+    corner_heatmaps = zeros(4, downsampledHeight, downsampledWidth, numQuads, 'single');
+    corner_offsets = zeros(4, 2, numQuads, 'single');
 
     labels = struct();
     labels.image_size = imageSize;
     labels.image_name = imageName;
+    labels.downsample_factor = downsampleFactor;
+    labels.heatmap_sigma = heatmapSigma;
+    labels.heatmap_format = 'mat-v7.3';
+    labels.heatmap_file = heatmapFileName;
+    labels.heatmap_dataset = 'corner_heatmaps';
+    labels.offset_dataset = 'corner_offsets';
     labels.quads = [];
+    if numQuads > 0
+        quadTemplate = struct( ...
+            'quad_id', 0, ...
+            'corners', zeros(4, 2), ...
+            'corners_normalized', zeros(4, 2), ...
+            'heatmap_index', 0, ...
+            'offset_index', 0, ...
+            'embedding_id', 0);
+        labels.quads = repmat(quadTemplate, 1, numQuads);
+    end
 
-    for i = 1:numel(polygons)
+    corners_denom = reshape([imageSize(2), imageSize(1)], 1, 2);
+
+    for i = 1:numQuads
         quad = polygons{i};  % Extract 4x2 vertices from cell array
 
         % Order corners: TL, TR, BR, BL (clockwise from top-left)
         quad = order_corners_clockwise(quad);
 
         % Generate Gaussian heatmap targets (sigma=3 for sub-pixel accuracy)
-        heatmaps = generate_gaussian_targets(quad, imageSize, 3);
+        heatmaps = generate_gaussian_targets(quad, imageSize, heatmapSigma);
 
         % Compute sub-pixel offsets (CRITICAL for <3px accuracy)
         offsets = compute_subpixel_offsets(quad, imageSize);
 
+        corner_heatmaps(:, :, :, i) = heatmaps;
+        corner_offsets(:, :, i) = offsets;
+
         % Embedding ID for grouping (each quad gets unique ID)
         embeddingID = i;
 
-        quadStruct = struct( ...
-            'quad_id', i, ...
-            'corners', quad, ...
-            'corners_normalized', quad ./ [imageSize(2), imageSize(1)], ...
-            'heatmaps', heatmaps, ...
-            'offsets', offsets, ...
-            'embedding_id', embeddingID);
-
-        if isempty(labels.quads)
-            labels.quads = quadStruct;
-        else
-            labels.quads(end+1) = quadStruct;
-        end
+        labels.quads(i).quad_id = i;
+        labels.quads(i).corners = quad;
+        labels.quads(i).corners_normalized = quad ./ corners_denom;
+        labels.quads(i).heatmap_index = i;
+        labels.quads(i).offset_index = i;
+        labels.quads(i).embedding_id = embeddingID;
     end
 
-    % Write JSON (atomic write pattern)
-    tmpPath = tempname(labelDir);
-    fid = fopen(tmpPath, 'w');
+    % Write MAT heatmap store (atomic write pattern)
+    tmpMatPath = [tempname(labelDir) '.mat'];
+    matCleanup = onCleanup(@() cleanup_temp_file(tmpMatPath));
+    save(tmpMatPath, 'corner_heatmaps', 'corner_offsets', '-v7.3');
+    movefile(tmpMatPath, heatmapPath, 'f');
+    clear matCleanup;
+
+    % Write JSON metadata (atomic write pattern)
+    tmpJsonPath = tempname(labelDir);
+    jsonCleanup = onCleanup(@() cleanup_temp_file(tmpJsonPath));
+    fid = fopen(tmpJsonPath, 'w');
     if fid < 0
         error('augmentDataset:jsonWrite', 'Cannot write label file: %s', labelPath);
     end
     jsonStr = jsonencode(labels, 'PrettyPrint', true);
     fprintf(fid, '%s', jsonStr);
     fclose(fid);
-    movefile(tmpPath, labelPath, 'f');
+    movefile(tmpJsonPath, labelPath, 'f');
+    clear jsonCleanup;
+
+    function cleanup_temp_file(pathStr)
+        if exist(pathStr, 'file')
+            delete(pathStr);
+        end
+    end
 end
 
 function quad_ordered = order_corners_clockwise(quad)
