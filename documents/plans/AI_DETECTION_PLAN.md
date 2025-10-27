@@ -1,39 +1,41 @@
-# Pixel-Perfect Quadrilateral Auto-Detection Implementation Plan
+# Quadrilateral Auto-Detection Implementation Plan
 
-**Last Updated:** 2025-10-27
+**Last Updated:** 2025-10-28
 **Current Phase:** Phase 1 Complete, Phase 2 Next
-**Overall Progress:** 8/33 tasks (24%)
+**Overall Progress:** Phase 1 complete (8 tasks); later phases pending
+**Architecture:** YOLOv11n Instance Segmentation (Ultralytics) + Enhanced Post-Processing
 
 ## Project Overview
-Implement AI-based auto-detection of concentration rectangles/polygons for microPAD analysis, achieving <3px corner accuracy on all Android devices using CornerNet-Lite keypoint detection.
+
+Implement AI-based auto-detection of concentration rectangles for microPAD analysis, achieving <3px corner accuracy on Android devices using state-of-the-art YOLOv11n instance segmentation with enhanced mask-to-quad conversion.
 
 **Hardware:** dual A6000 (48GB each, NVLink), 256GB RAM
-**Target Accuracy:** 95% of corners within 3 pixels
-**Model Size:** <5MB (Android-compatible)
-**Inference Time:** 15-30ms on budget Android devices
+**Input Images:** High-resolution smartphone photos (4032×3024 iPhone, similar for Android)
+**Target Accuracy:** 95% of corners within 3 pixels (IoU > 0.95)
+**Model Size:** ~5MB (YOLOv11n-seg)
+**Inference Time:** <50ms on budget Android devices (target optimization during implementation)
+**Architecture Rationale:** YOLOv11n-seg achieves 83.1% mask precision with 22% fewer parameters than YOLOv8m. Instance segmentation handles irregular quadrilaterals (perspective distortion, paper defects, occlusion) better than OBB. Mature ONNX/TFLite export for Android/MATLAB deployment.
 
 ## Project Context
 
-This plan integrates with the existing MATLAB-based colorimetric analysis pipeline described in `CLAUDE.md`:
+Integrates with existing MATLAB pipeline (`CLAUDE.md`):
 
-**Existing Pipeline (5 stages):**
+**Pipeline:**
 ```
-1_dataset -> 2_micropad_papers -> 3_concentration_rectangles -> 4_elliptical_regions -> 5_extract_features
+1_dataset → 2_micropad_papers → 3_concentration_rectangles → 4_elliptical_regions → 5_extract_features
 ```
 
 **AI Detection Target:**
 - Replace manual polygon selection in `cut_concentration_rectangles.m` (Stage 3)
-- Current: User manually clicks/drags to define 7 concentration regions per paper
+- Current: User manually defines 7 concentration regions per paper
 - Goal: AI auto-detects all 7 regions with <3px corner accuracy
 
-**Dataset Structure:**
+**Dataset:**
 - Four phone directories: `iphone_11/`, `iphone_15/`, `realme_c55/`, `samsung_a75/`
-- Each contains raw microPAD images in Stage 1
-- No Python code infrastructure exists yet
+- No Python infrastructure exists yet
 - No augmented training data generated yet
 
 **Related Documentation:**
-- `documents/plans/AUGMENT_OPTIMIZATION_PLAN.md`: Performance and I/O optimization roadmap for `augment_dataset.m`
 - `CLAUDE.md`: Main project documentation and coding standards
 - `AGENTS.md`: Multi-agent workflow documentation
 
@@ -44,1387 +46,365 @@ This plan integrates with the existing MATLAB-based colorimetric analysis pipeli
 - [🔄] In progress
 - [✅] Completed
 - [⚠️] Blocked/needs attention
-- [🔍] Needs review
 
 ---
 
-## Phase 1: Refactor `augment_dataset.m` for Corner Detection Training
+## Phase 1: Refactor `augment_dataset.m` for Segmentation Training
 
 ### 1.1 Enhanced Perspective & Camera Parameters
 - [✅] **File:** `matlab_scripts/augment_dataset.m` (lines 69-75)
-- [✅] **Task:** Increase camera perspective ranges for more extreme viewing angles
-- [✅] **Changes:**
+- [✅] **Task:** Increase camera perspective ranges for extreme viewing angles
+- [✅] **Implementation:**
   ```matlab
-  % Change from:
-  CAMERA = struct('maxAngleDeg', 45, 'xRange', [-0.5, 0.5], 'yRange', [-0.5, 0.5], ...)
-
-  % To:
   CAMERA = struct( ...
-      'maxAngleDeg', 60, ...           % Increase from 45°
-      'xRange', [-0.8, 0.8], ...       % Increase from [-0.5, 0.5]
-      'yRange', [-0.8, 0.8], ...       % Increase from [-0.5, 0.5]
-      'zRange', [1.2, 3.0], ...        % Widen from [1.4, 2.6]
+      'maxAngleDeg', 60, ...           % Increased from 45°
+      'xRange', [-0.8, 0.8], ...       % Increased from [-0.5, 0.5]
+      'yRange', [-0.8, 0.8], ...       % Increased from [-0.5, 0.5]
+      'zRange', [1.2, 3.0], ...        % Widened from [1.4, 2.6]
       'coverageCenter', 0.97, ...
-      'coverageOffcenter', 0.90);      % Reduce from 0.95 for tighter crops
+      'coverageOffcenter', 0.90);      % Reduced from 0.95
   ```
-- [✅] **Rationale:** Real-world phone captures have more extreme perspectives than current simulation
-- [✅] **Test:** Generate 10 samples, verify polygon corners are visible and not clipped
+- [✅] **Test:** Generate 10 samples, verify polygon corners visible
 
 ---
 
-### 1.2 Add Corner-Specific Occlusion
-- [✅] **File:** `matlab_scripts/augment_dataset.m` (after line 117, before PLACEMENT struct)
-- [✅] **Task:** Add realistic corner occlusions (fingers, shadows, small objects)
-- [✅] **New Configuration Block:**
+### 1.2 Multi-Scale Scene Generation
+- [✅] **File:** `matlab_scripts/augment_dataset.m` (lines 158-160, 687-709)
+- [✅] **Task:** Generate each augmentation at multiple scales
+- [✅] **Parameters:**
   ```matlab
-  % === CORNER ROBUSTNESS AUGMENTATION ===
-  CORNER_OCCLUSION = struct( ...
-      'probability', 0.15, ...              % 15% of polygons get corner occlusions
-      'occlusionTypes', {{'finger', 'shadow', 'small_object'}}, ...
-      'sizeRange', [15, 40], ...            % Occlusion size in pixels
-      'maxCornersPerPolygon', 2, ...        % Never occlude all 4 corners
-      'intensityRange', [-80, -30]);        % Dark occlusions (negative intensity)
-
-  EDGE_DEGRADATION = struct( ...
-      'probability', 0.25, ...              % 25% of polygons get edge blur
-      'blurTypes', {{'gaussian', 'motion'}}, ...
-      'blurRadiusRange', [1.5, 4.0], ...    % Blur kernel size
-      'affectsEdgesOnly', true, ...         % Only blur polygon edges, not interior
-      'edgeWidth', 10);                     % Pixels from edge to blur
-  ```
-- [✅] **Implementation Location:** Configuration structs added at lines 119-132
-- [✅] **New Functions to Create:** (Implementation deferred - functions added to cfg)
-  ```matlab
-  function img = applyCornerOcclusions(img, polygons, cfg)
-      % Apply realistic corner occlusions to test robustness
-      for i = 1:size(polygons, 1)
-          if rand() < cfg.cornerOcclusion.probability
-              poly = squeeze(polygons(i, :, :));
-              img = addCornerOcclusion(img, poly, cfg);
-          end
-      end
-  end
-
-  function img = applyEdgeDegradation(img, polygons, cfg)
-      % Blur edges to simulate motion blur or focus issues
-      for i = 1:size(polygons, 1)
-          if rand() < cfg.edgeDegradation.probability
-              poly = squeeze(polygons(i, :, :));
-              img = blurPolygonEdges(img, poly, cfg);
-          end
-      end
-  end
-  ```
-- [✅] **Test:** Configuration added, ready for integration when helper functions implemented
-
----
-
-### 1.3 Multi-Scale Scene Generation
-- [✅] **File:** `matlab_scripts/augment_dataset.m` (lines 158-160)
-- [✅] **Task:** Generate each augmentation at multiple scales for scale invariance
-- [✅] **New Parameters:**
-  ```matlab
-  % Add after backgroundHeight parameter:
   addParameter(parser, 'multiScale', true, @islogical);
   addParameter(parser, 'scales', [640, 800, 1024], ...
       @(x) validateattributes(x, {'numeric'}, {'vector', 'positive', 'integer'}));
   ```
-- [✅] **Modify:** Multi-scale generation implemented at lines 687-709
-- [✅] **Implementation:**
-  ```matlab
-  % In augment_phone(), after generating base scene:
-  if cfg.multiScale
-      for scaleIdx = 1:numel(cfg.scales)
-          targetSize = cfg.scales(scaleIdx);
-          scaledScene = imresize(scene, [targetSize, targetSize]);
-
-          % Scale polygon coordinates proportionally
-          scaleFactor = targetSize / cfg.backgroundSize(1);
-          scaledPolygons = polygons * scaleFactor;
-
-          % Save with scale suffix
-          sceneName = sprintf('%s_%s_%03d_scale%d', ...
-              cfg.scenePrefix, paperBase, augIdx, targetSize);
-          outputPath = fullfile(stage1PhoneOut, [sceneName '.jpg']);
-          imwrite(scaledScene, outputPath, 'JPEG', 'Quality', cfg.jpegQuality);
-
-          % Export labels for this scale
-          export_corner_labels(stage1PhoneOut, sceneName, scaledPolygons, size(scaledScene));
-      end
-  end
-  ```
-- [✅] **Expected Output:** Each augmentation generates 3 files: `synthetic_XXX_scale640.jpg`, `synthetic_XXX_scale800.jpg`, `synthetic_XXX_scale1024.jpg`
-- [✅] **Test:** Verify polygon coordinates scale correctly across all 3 sizes
+- [✅] **Output:** `synthetic_XXX_scale640.jpg`, `synthetic_XXX_scale800.jpg`, `synthetic_XXX_scale1024.jpg`
+- [✅] **Test:** Verify polygon coordinates scale correctly
 
 ---
 
-### 1.4 Export Corner Keypoint Labels (CRITICAL)
-- [x] **File:** `matlab_scripts/augment_dataset.m` (parameter wiring around lines 45-176; label helpers at lines 2713-3046)
-- [x] **Task:** Export training labels in keypoint detection format (JSON)
-- [x] **Status:** Fully implemented and tested
-- [x] **Bug Fix (2025-10-24):** Fixed cell array indexing error in `export_corner_labels()`
-  - **Root Cause:** Used `size(polygons, 1)` and `squeeze(polygons(i, :, :))` for cell array
-  - **Fix:** Changed to `numel(polygons)` and `polygons{i}` for correct cell indexing
-  - **Error Message:** "Invalid data type. First argument must be numeric or logical" in `mean()`
-- [x] **New Option (2025-10-27):** Added 'exportCornerLabels' flag so JSON output is opt-in for passthrough, synthetic, and scale exports (lines 45, 171, 571, 916, 945)
-  - Default remains `false` to reduce I/O when only images are needed
-  - `augment_dataset(..., 'exportCornerLabels', true)` re-enables label emission without touching code
-- [x] **Recent Enhancement (2025-10-27):** Added crop back-projection helpers (lines 323-376, 2834-3046)
-  - Reads Stage 2 rectangular crop metadata via `read_rectangular_crop_coordinates`
-  - Uses `apply_crop_transforms` and `transform_polygon_to_original_space` to move strip-space polygons into Stage 1 coordinates before augmentation
-  - Keeps passthrough and synthetic exports aligned with original capture geometry
-- [x] **New Functions:**
+### 1.3 Export YOLOv11 Segmentation Labels
+- [ ] **File:** `matlab_scripts/augment_dataset.m`
+- [ ] **Task:** Replace old JSON label export with YOLOv11 segmentation polygon format
+
+#### 1.3.1 Remove Old JSON Label Export
+- [ ] **Cleanup:** Remove deprecated corner label functions
+- [ ] **Functions to Remove:**
+  - `export_corner_labels()` (lines ~2713-2886)
+  - `generate_gaussian_targets()` (if exists)
+  - `compute_subpixel_offsets()` (if exists)
+  - MAT heatmap export logic
+- [ ] **Parameters to Remove:**
+  - `exportCornerLabels` parameter
+  - Any heatmap-related configuration
+- [ ] **Remove Calls:** Search and remove all calls to `export_corner_labels()`
+
+#### 1.3.2 Add YOLOv11 Segmentation Label Export Function
+- [ ] **New Function:** Replace `export_corner_labels()` (lines 3213-3306) with simplified version:
   ```matlab
-  function export_corner_labels(outputDir, imageName, polygons, imageSize)
-      % Export corner labels in keypoint detection format
-      % Format: JSON with corner heatmap targets + sub-pixel offsets + embeddings
+  function export_yolo_segmentation_labels(outputDir, imageName, polygons, imageSize)
+      % Export YOLOv11 segmentation format: class_id x1 y1 x2 y2 x3 y3 x4 y4 (normalized)
 
       labelDir = fullfile(outputDir, 'labels');
       if ~isfolder(labelDir), mkdir(labelDir); end
 
-      labelPath = fullfile(labelDir, [imageName '.json']);
+      labelPath = fullfile(labelDir, [imageName '.txt']);
+      tmpPath = tempname(labelDir);
+      fid = fopen(tmpPath, 'wt');
 
-      labels = struct();
-      labels.image_size = imageSize;
-      labels.image_name = imageName;
-      labels.quads = [];
+      for i = 1:numel(polygons)
+          quad = polygons{i};  % 4×2 vertices
 
-      for i = 1:size(polygons, 1)
-          quad = squeeze(polygons(i, :, :));  % Extract 4×2 vertices
-
-          % Order corners: TL, TR, BR, BL (clockwise from top-left)
+          % Order corners clockwise from top-left
           quad = order_corners_clockwise(quad);
 
-          % Generate Gaussian heatmap targets (sigma=3 for sub-pixel accuracy)
-          heatmaps = generate_gaussian_targets(quad, imageSize, 3);
-
-          % Compute sub-pixel offsets (CRITICAL for <3px accuracy)
-          offsets = compute_subpixel_offsets(quad, imageSize);
-
-          % Embedding ID for grouping (each quad gets unique ID)
-          embeddingID = i;
-
-          labels.quads(end+1) = struct( ...
-              'quad_id', i, ...
-              'corners', quad, ...              % (4, 2) absolute pixel coords
-              'corners_normalized', quad ./ [imageSize(2), imageSize(1)], ... % (4, 2) normalized [0-1]
-              'heatmaps', heatmaps, ...         % (4, H/4, W/4) Gaussian maps
-              'offsets', offsets, ...           % (4, 2) sub-pixel deltas [0-1]
-              'embedding_id', embeddingID);
-      end
-
-      % Write JSON (pretty-printed for readability)
-      jsonStr = jsonencode(labels, 'PrettyPrint', true);
-      fid = fopen(labelPath, 'w');
-      fprintf(fid, '%s', jsonStr);
-      fclose(fid);
-  end
-
-  function quad_ordered = order_corners_clockwise(quad)
-      % Order vertices: TL, TR, BR, BL (clockwise from top-left)
-      % Method: Sort by angle from centroid, then rotate to start from top-left
-
-      centroid = mean(quad, 1);
-      angles = atan2(quad(:,2) - centroid(2), quad(:,1) - centroid(1));
-      [~, order] = sort(angles);
-      quad_ordered = quad(order, :);
-
-      % Ensure top-left corner is first (minimum distance from origin)
-      [~, topLeftIdx] = min(sum(quad_ordered.^2, 2));
-      quad_ordered = circshift(quad_ordered, -topLeftIdx + 1, 1);
-  end
-
-  function heatmaps = generate_gaussian_targets(quad, imageSize, sigma)
-      % Generate 4 separate heatmaps (one per corner type: TL, TR, BR, BL)
-      % Output resolution: imageSize / 4 (downsampled for efficiency)
-
-      H = round(imageSize(1) / 4);
-      W = round(imageSize(2) / 4);
-      heatmaps = zeros(4, H, W, 'single');
-
-      for i = 1:4
-          % Normalize corner to downsampled space
-          cx = quad(i, 1) * W / imageSize(2);
-          cy = quad(i, 2) * H / imageSize(1);
-
-          % Generate 2D Gaussian centered at (cx, cy)
-          [X, Y] = meshgrid(1:W, 1:H);
-          gaussian = exp(-((X - cx).^2 + (Y - cy).^2) / (2 * sigma^2));
-
           % Normalize to [0, 1]
-          heatmaps(i, :, :) = gaussian / max(gaussian(:));
+          normQuad = quad ./ [imageSize(2), imageSize(1)];
+
+          % Write: 0 x1 y1 x2 y2 x3 y3 x4 y4
+          fprintf(fid, '0');  % class_id always 0 (concentration zone)
+          fprintf(fid, ' %.6f %.6f', normQuad');
+          fprintf(fid, '\n');
       end
-  end
 
-  function offsets = compute_subpixel_offsets(quad, imageSize)
-      % Compute fractional pixel offsets for sub-pixel accuracy
-      % These offsets allow the model to predict corners with <1px precision
-
-      H = round(imageSize(1) / 4);
-      W = round(imageSize(2) / 4);
-      offsets = zeros(4, 2, 'single');
-
-      for i = 1:4
-          % Normalize coordinates to downsampled space
-          cx = quad(i, 1) * W / imageSize(2);
-          cy = quad(i, 2) * H / imageSize(1);
-
-          % Separate integer and fractional parts
-          cx_int = floor(cx);
-          cy_int = floor(cy);
-
-          % Fractional offsets (0 to 1)
-          offsets(i, 1) = cx - cx_int;  % dx
-          offsets(i, 2) = cy - cy_int;  % dy
-      end
+      fclose(fid);
+      movefile(tmpPath, labelPath, 'f');
   end
   ```
-- [✅] **Integration Point:** Added call at line 685 after imwrite()
+- [ ] **Note:** Removed distractor class support - use standard augmentation instead of synthetic distractors
+
+#### 1.3.3 Integration
+- [ ] **Rename Parameter:** Change `exportCornerLabels` → `exportYOLOLabels` (line 155)
+- [ ] **Replace Calls:** Replace `export_corner_labels()` calls (lines 564, 931, 960) with:
   ```matlab
-  % After saving image:
-  imwrite(scene, outputPath, 'JPEG', 'Quality', cfg.jpegQuality);
-
-  % NEW: Export corner labels (optional)
-  if cfg.exportCornerLabels
-      export_corner_labels(stage1PhoneOut, sceneName, transformedPolygons, size(scene));
+  if cfg.exportYOLOLabels
+      export_yolo_segmentation_labels(outputDir, imageName, polygons, imageSize);
   end
   ```
-- [✅] **Test Cases:** All functions implemented with proper error handling
-  - [✅] Verify JSON format is valid and readable
-  - [✅] Check heatmaps have correct shape (4, H/4, W/4)
-  - [✅] Verify offsets are in range [0, 1]
-  - [✅] Confirm corners are ordered clockwise from top-left
-  - [✅] Test with 1 quad and 7 quads per image
+- [ ] **Test:** Run `augment_dataset('numAugmentations', 3, 'rngSeed', 42)` and verify:
+  - `augmented_1_dataset/labels/*.txt` files exist
+  - Each line format: `0 x1 y1 x2 y2 x3 y3 x4 y4` (9 values, space-separated)
+  - All coordinates in [0, 1] range
 
 ---
 
-### 1.5 Background Texture Pooling & Rotation Range
-- [x] **File:** `matlab_scripts/augment_dataset.m` (rotation constants at lines 78-83; texture pooling at lines 1180-1335)
-- [x] **Task:** Expand rotation coverage and reuse procedurally generated backgrounds via pooling to balance variation with speed.
-- [x] **Configuration Updates:**
+### 1.4 Background Texture Pooling & Rotation
+- [✅] **File:** `matlab_scripts/augment_dataset.m` (lines 78-83, 1180-1335)
+- [✅] **Task:** Full rotation coverage with texture pooling
+- [✅] **Configuration:**
   ```matlab
   ROTATION_RANGE = [0, 360];
-  
+
   TEXTURE = struct( ...
-      'tileBaseRGB', [200, 195, 185], ...
-      'tileVariation', 20, ...
-      'tileSpacingRange', [100, 200], ...
-      'groutWidthRange', [2, 5], ...
       'poolSize', 16, ...
       'poolRefreshInterval', 25, ...
       'poolShiftPixels', 48, ...
       'poolScaleRange', [0.9, 1.1], ...
       'poolFlipProbability', 0.15);
   ```
-- [x] **Implementation:** `initialize_background_texture_pool`, `texture_pool_config_changed`, and `apply_texture_pool_jitter` pre-generate four surface families, reusing them with random shifts, flips, and scale jitter instead of regenerating every frame.
-- [x] **Effect:** Reduces per-image background synthesis cost while maintaining photoreal variation (no tiling patterns, richer lighting jitter).
-- [x] **Test:** Generate 50 synthetic scenes, confirm surfaces recycle without visible seams, and verify rotation histograms cover 0-360 degrees.
+- [✅] **Test:** Generate 50 scenes, verify rotation coverage
+
 ---
 
-### 1.6 Optimize Artifact Sharpness & Density
-- [✅] **File:** `matlab_scripts/augment_dataset.m` (lines 96-112, ARTIFACTS struct; lines 1356-1513, add_sparse_artifacts function)
-- [✅] **Task:** Make artifacts sharp by default to match polygon sharpness characteristics
-- [✅] **Changes Implemented (2025-10-27):**
-  - Removed individual artifact blur logic from all artifact types (ellipses, rectangles, quadrilaterals, triangles, lines)
-  - Changed artifact upscaling from `'bilinear'` to `'nearest'` interpolation (line 1513)
-  - Removed blur configuration parameters (ellipseBlurSigmaRange, rectangleBlurSigmaRange, etc.)
-  - Removed `blurProbability` parameter from `add_sparse_artifacts()` and `generate_realistic_lab_surface()` functions
-  - Updated function comments to reflect new behavior
-- [✅] **Current Configuration:**
+### 1.5 Optimize Artifact Sharpness & Density
+- [✅] **File:** `matlab_scripts/augment_dataset.m` (lines 96-112, 1356-1513)
+- [✅] **Task:** Sharp artifacts matching polygon sharpness
+- [✅] **Changes:**
+  - Removed individual artifact blur
+  - Changed upscaling from bilinear to nearest-neighbor
+  - Artifacts sharp by default, scene-wide blur only (25% probability)
+- [✅] **Configuration:**
   ```matlab
   ARTIFACTS = struct( ...
-      'countRange', [5, 40], ...            % Moderate density (5-40 artifacts per image)
-      'sizeRangePercent', [0.01, 0.75], ... % 1-75% of image diagonal
-      'minSizePixels', 3, ...
-      'overhangMargin', 0.5, ...
-      'lineWidthRatio', 0.02, ...
-      'lineRotationPadding', 10, ...
-      'ellipseRadiusARange', [0.4, 0.7], ...
-      'ellipseRadiusBRange', [0.3, 0.6], ...
-      'rectangleSizeRange', [0.5, 0.9], ...
-      'quadSizeRange', [0.5, 0.9], ...
-      'quadPerturbation', 0.15, ...
-      'triangleSizeRange', [0.6, 0.9], ...
-      'lineIntensityRange', [-80, -40], ...
-      'blobDarkIntensityRange', [-60, -30], ...
-      'blobLightIntensityRange', [20, 50]);
+      'countRange', [5, 40], ...
+      'sizeRangePercent', [0.01, 0.75], ...
+      'minSizePixels', 3);
   ```
-- [✅] **Blur Behavior:**
-  - Artifacts are **sharp by default** (no individual blur at generation time)
-  - Only blurred when **scene-wide blur is applied** (25% probability via `cfg.blurProbability`)
-  - Both polygons and artifacts receive **identical blur treatment** for consistent appearance
-- [✅] **Rationale:** Artifacts serve as distractor objects for polygon detection training. They must have the same sharpness characteristics as real concentration rectangles to effectively train the model to distinguish based on shape/position rather than blur artifacts.
-- [✅] **Test:** Generate synthetic scenes, verify artifacts appear sharp and crisp with edges matching polygon sharpness
+- [✅] **Test:** Verify artifacts have sharp edges
 
 ---
 
-### 1.6.1 Polygon-Shaped Distractors (Advanced Negative Samples)
-- [✅] **File:** `matlab_scripts/augment_dataset.m` (lines 120-130, DISTRACTOR_POLYGONS struct; lines 1106-1196, add_polygon_distractors function)
-- [✅] **Task:** Add synthetic polygon-shaped distractors that look like real concentration rectangles but are false positives
-- [✅] **Changes Implemented (2025-10-27):**
-  - Removed deprecated `multiplier` field
-  - Implemented random distractor count (1-10 per image)
-  - Added variable size scaling (0.5×-1.5× of source polygon)
-  - Each distractor independently scaled and placed
-- [✅] **Current Configuration:**
+### 1.6 Polygon-Shaped Distractors
+- [✅] **File:** `matlab_scripts/augment_dataset.m` (lines 120-130, 1106-1196)
+- [✅] **Task:** Add synthetic polygon distractors (false positives for training)
+- [✅] **Configuration:**
   ```matlab
   DISTRACTOR_POLYGONS = struct( ...
       'enabled', true, ...
       'minCount', 1, ...
       'maxCount', 10, ...
-      'sizeScaleRange', [0.5, 1.5], ...            % Uniform random scale applied to each distractor
+      'sizeScaleRange', [0.5, 1.5], ...
       'maxPlacementAttempts', 30, ...
-      'brightnessOffsetRange', [-20, 20], ...      % Applied in intensity space (uint8 scale)
+      'brightnessOffsetRange', [-20, 20], ...
       'contrastScaleRange', [0.9, 1.15], ...
-      'noiseStd', 6);                              % Gaussian noise strength in uint8 units
+      'noiseStd', 6);
   ```
-- [✅] **Implementation Details:**
-  - Random count: `randi([minCount, maxCount])` instead of `multiplier × numSourcePolygons`
-  - Size variation: Each distractor gets random scale factor from `[0.5, 1.5]`
-  - Appearance: Synthesized from real polygon templates with photometric jitter
-  - Placement: Grid-accelerated collision detection ensures no overlaps
-  - Sharpness: Sharp by default, matches real polygons (scene blur only)
-- [✅] **Rationale:**
-  - **Hard negatives:** Distractors that look similar to real test zones force the AI to learn context and position cues, not just appearance
-  - **Scale invariance:** Variable sizes (0.5×-1.5×) train the model to handle polygons at different scales
-  - **Realistic diversity:** Random count (1-10) prevents model from learning fixed patterns
-  - **Appearance variation:** Photometric jitter ensures distractors don't look identical to real polygons
-- [✅] **Test:** Generate synthetic scenes, verify 1-10 distractor polygons per image with varied sizes (50%-150% of source)
+- [✅] **Implementation:** 1-10 distractor polygons per image with varied sizes
+- [✅] **Test:** Verify distractor count and size variation
 
 ---
 
 ### 1.7 Add Extreme Edge Cases
-- [✅] **File:** `matlab_scripts/augment_dataset.m` (line 160, lines 377-390, lines 676-680)
-- [✅] **Task:** Generate 10% of samples with extreme conditions
-- [✅] **New Parameter:**
+- [✅] **File:** `matlab_scripts/augment_dataset.m` (lines 160, 377-390, 676-680)
+- [✅] **Task:** Generate 10% samples with extreme conditions
+- [✅] **Parameter:**
   ```matlab
   addParameter(parser, 'extremeCasesProbability', 0.10, ...
       @(x) validateattributes(x, {'numeric'}, {'scalar', '>=', 0, '<=', 1}));
   ```
-- [✅] **Implementation:** Extreme cases implemented for camera viewpoint and photometric augmentation
-  ```matlab
-  % Before generating augmentation:
-  if rand() < cfg.extremeCasesProbability
-      % Override settings for extreme case
-      extremeCamera = cfg.camera;
-      extremeCamera.maxAngleDeg = 75;        % Very steep angle
-      extremeCamera.zRange = [0.8, 4.0];     % Extreme depth variation
-
-      % Use extreme settings for this augmentation
-      scene = generateAugmentedScene(paperImg, polygons, extremeCamera, ...
-                                     'lowLighting', true, ...     % Brightness × 0.4
-                                     'heavyOcclusion', true);     % 2-3 corners occluded
-  else
-      % Normal augmentation
-      scene = generateAugmentedScene(paperImg, polygons, cfg.camera);
-  end
-  ```
 - [✅] **Extreme Conditions:**
-  - [✅] Very low lighting (brightness multiplier: 0.4-0.6)
-  - [✅] Very high viewing angle (maxAngleDeg: 75°, zRange: [0.8, 4.0])
-  - [✅] Small polygons (camera z range extended)
-  - [✅] Heavy corner occlusion (configuration ready)
-- [✅] **Test:** Generate 100 samples, verify ~10 are extreme cases
+  - Very low lighting (brightness × 0.4-0.6)
+  - High viewing angle (maxAngleDeg: 75°, zRange: [0.8, 4.0])
+  - Small/large polygons (extended z range)
+- [✅] **Test:** Generate 100 samples, verify ~10 are extreme
 
 ---
 
-### 1.8 Configuration Summary & Validation
-- [✅] **Task:** Add configuration validation and summary printout
-- [✅] **Location:** Added at lines 233-257 after parsing parameters
-- [✅] **Add:**
-  ```matlab
-  % Validate configuration consistency
-  if cfg.independentRotation && cfg.extremeCasesProbability > 0.5
-      warning('augmentDataset:config', ...
-          'Independent rotation + high extreme cases may generate too-difficult samples');
-  end
-
-  % Print augmentation summary
-  fprintf('\n=== Augmentation Configuration ===\n');
-  fprintf('Camera perspective: %.0f° max angle, X=[%.1f,%.1f], Y=[%.1f,%.1f], Z=[%.1f,%.1f]\n', ...
-      cfg.camera.maxAngleDeg, cfg.camera.xRange, cfg.camera.yRange, cfg.camera.zRange);
-  fprintf('Corner occlusion: %.0f%% probability, max %d corners/polygon\n', ...
-      cfg.cornerOcclusion.probability*100, cfg.cornerOcclusion.maxCornersPerPolygon);
-  fprintf('Edge degradation: %.0f%% probability\n', cfg.edgeDegradation.probability*100);
-  fprintf('Multi-scale: %s (scales: %s)\n', ...
-      string(cfg.multiScale), strjoin(string(cfg.scales), ', '));
-  fprintf('Artifacts: %d-%d per image, %.0f%% near corners\n', ...
-      cfg.artifacts.countRange(1), cfg.artifacts.countRange(2), ...
-      cfg.artifacts.cornerProximityBias*100);
-  fprintf('Extreme cases: %.0f%% probability\n', cfg.extremeCasesProbability*100);
-  fprintf('==================================\n\n');
-  ```
-- [✅] **Test:** Run with default parameters, verify summary is printed correctly
-
----
-
-### 1.9 Performance Optimization Results
-- [✅] **Task:** Optimize `augment_dataset.m` for memory and I/O (Phase 1.9 wrap-up)
-- [✅] **Status:** All core optimizations complete (8/18 tasks, 44%)
-- [✅] **Reference:** See `documents/plans/AUGMENT_OPTIMIZATION_PLAN.md` for detailed implementation plan
-- [✅] **Optimizations Implemented:**
-  - **Phase 1 (High-Impact):**
-    - Corner label export: MAT format with HDF5 compression (lines 2732-2886) - 100x I/O speedup, 95% storage reduction
-    - Artifact masks: Unit-square normalization (lines 1359-1582) - 6000x memory reduction for large artifacts
-    - Background synthesis: Single-precision pipeline with pooled texture reuse (lines 1138-1252)
-  - **Phase 2 (Medium-Impact):**
-    - Artifact blur: Separable convolution via unit-square pre-blur (3-5x faster)
-    - Motion blur: PSF caching with persistent containers.Map (10x speedup on repeated kernels)
-  - **Phase 3 (Low-Impact):**
-    - Removed unused CORNER_OCCLUSION/EDGE_DEGRADATION configuration blocks
-    - Poisson-disk polygon placement with grid-aware fallback (reduces placement retries)
-    - Background texture pooling with scheduled refresh (4 procedural types, 16 cached variants each)
+### 1.8 Performance Optimization Results
+- [✅] **Task:** Optimize memory and I/O
+- [✅] **Optimizations:**
+  - Background synthesis: Single-precision with texture pooling
+  - Artifact masks: Unit-square normalization
+  - Motion blur: PSF caching
+  - Poisson-disk polygon placement
 - [✅] **Results:**
-  - Throughput: 3.0s → ~1.0s per augmentation (3x speedup)
-  - Peak memory: ~8GB → ~2GB (4x reduction)
-  - Storage: ~12GB → ~2GB for 24,000 labels (6x reduction with compressed MAT files)
-- [✅] **Implementation Details:**
-  - MAT heatmap files: `.mat` (v7.3 HDF5) with `corner_heatmaps` (4×H/4×W/4×N) and `corner_offsets` (4×2×N) as single precision
-  - JSON metadata: References MAT file, contains corners and image info only
-  - Unit-square artifacts: 64×64 normalized masks upscaled with nearest-neighbor (sharp edges, matches polygons)
-  - Atomic write pattern: All file I/O uses tempfile + movefile for corruption safety
-- [✅] **Artifact Sharpness Fix (2025-10-27):**
-  - Problem: Artifacts were systematically softer than polygons (2-3 blur passes vs 0-1)
-  - Solution: Removed individual artifact blur, changed upscaling from bilinear to nearest-neighbor
-  - Result: Artifacts now have identical sharpness to concentration rectangles (sharp by default, scene blur only)
-- [✅] **Remaining Work:** Documentation (Phase 5) - create performance report
-
+  - Throughput: 3.0s → 1.0s per augmentation (3x speedup)
+  - Peak memory: 8GB → 2GB (4x reduction)
 
 ---
 
-## Phase 2: Generate Large-Scale Training Data
+## Phase 2: Real Dataset Curation & Synthetic Generation
 
-### 2.1 Data Generation Strategy
+### 2.1 Manual Labeling Sprint
+- [ ] **Task:** Annotate 50 images per phone directory (`iphone_11`, `iphone_15`, `realme_c55`, `samsung_a75`) covering lighting, motion blur, and partial occlusion cases.
+- [ ] **Tooling:** Use CVAT polygon mode or Labelme; export YOLO segmentation polygons with TL-TR-BR-BL ordering.
+- [ ] **Output:** Store images under `1_dataset/labels_manual/images/` and labels under `1_dataset/labels_manual/labels/`.
+- [ ] **QA:** Review 10% of annotations with a second pass; document issues in `documents/qa/manual_labeling.md`.
+
+### 2.2 Domain Gap Audit
+- [ ] **Task:** Compare manual labels with synthetic augmentations; adjust augmentation parameters when histogram or color drift exceeds tolerance.
+- [ ] **Checklist:** Brightness histogram overlap, white balance deltaE < 5, blur kernel estimate, perspective angle distribution.
+- [ ] **Deliverables:** Update augmentation presets accordingly and record findings in `documents/reports/domain_gap_summary.md`.
+
+### 2.3 Synthetic Data Generation
 - [ ] **Task:** Generate 24,000+ training samples (8,000 base × 3 scales)
-- [ ] **Hardware:** dual A6000 (48GB each, NVLink), 256GB RAM
 - [ ] **Command:**
   ```matlab
-  % Generate with multiple random seeds for diversity
   for seed = 1:10
-      fprintf('=== Generating dataset with seed %d ===\n', seed);
+      fprintf('=== Seed %d ===\\n', seed);
       augment_dataset('numAugmentations', 10, ...
                       'rngSeed', seed * 42, ...
-                      'multiScale', true, ...              % 3 scales: 640, 800, 1024
+                      'multiScale', true, ...
                       'photometricAugmentation', true, ...
-                      'independentRotation', false, ...    % Keep false for speed
-                      'extremeCasesProbability', 0.10);
+                      'independentRotation', false, ...
+                      'extremeCasesProbability', 0.10, ...
+                      'exportYOLOLabels', true);
   end
   ```
 - [ ] **Expected Output:**
-  - 80 papers × 10 augmentations/paper × 10 seeds = 8,000 base images
-  - 8,000 × 3 scales = **24,000 training samples**
-- [ ] **Storage Estimate:** ~50GB (2MB per image × 24,000)
+  - 80 papers × 10 augmentations × 10 seeds = 8,000 base images
+  - 8,000 × 3 scales = 24,000 training samples
+- [ ] **Storage:** ~50GB (2MB per image)
 
-### 2.2 Verify Generated Data Quality
-- [ ] **Task:** Random quality checks on generated dataset
-- [ ] **Checks:**
-  - [ ] Verify JSON labels exist for all images
-  - [ ] Check polygon coordinates are within image bounds
-  - [ ] Verify heatmaps have correct dimensions
-  - [ ] Confirm offsets are in [0, 1] range
-  - [ ] Ensure every `aug_000` file routed to validation is absent from training (enforce phone hold-out)
-  - [ ] Spot-check 100 random images visually
-- [ ] **Script to Create:** `matlab_scripts/verify_dataset_quality.m`
-  ```matlab
-  function verify_dataset_quality(datasetPath, valPhone, numSamples)
-      % Random quality checks on augmented dataset with phone-level validation guard
-      arguments
-          datasetPath (1, :) char
-          valPhone (1, :) char = ''
-          numSamples (1, 1) double {mustBeInteger, mustBePositive} = 100
-      end
+## Phase 3: YOLOv11 Training Pipeline
 
-      imageFiles = dir(fullfile(datasetPath, '**/*.jpg'));
-      labelFiles = dir(fullfile(datasetPath, '**/labels/*.json'));
-
-      fprintf('Found %d images, %d labels\n', numel(imageFiles), numel(labelFiles));
-
-      if ~isempty(valPhone)
-          valDir = fullfile(datasetPath, valPhone);
-          if ~isfolder(valDir)
-              error('Validation phone folder "%s" not found under %s', valPhone, datasetPath);
-          end
-
-          trainDirs = dir(datasetPath);
-          trainDirs = trainDirs([trainDirs.isdir] & ~ismember({trainDirs.name}, {'.', '..', valPhone}));
-
-          valAug0 = dir(fullfile(valDir, '**/*_aug_000*.jpg'));
-          trainAug0 = [];
-          for d = 1:numel(trainDirs)
-              trainAug0 = [trainAug0; dir(fullfile(datasetPath, trainDirs(d).name, '**/*_aug_000*.jpg'))]; %#ok<AGROW>
-          end
-
-          if ~isempty(valAug0) && ~isempty(trainAug0)
-              valNames = {valAug0.name};
-              trainNames = {trainAug0.name};
-              overlap = intersect(valNames, trainNames);
-              if ~isempty(overlap)
-                  error('aug_000 leakage detected between validation and training sets: %s', strjoin(overlap, ', '));
-              end
-          end
-      end
-
-      % Sample random subset
-      indices = randperm(numel(imageFiles), min(numSamples, numel(imageFiles)));
-
-      for i = indices
-          imgPath = fullfile(imageFiles(i).folder, imageFiles(i).name);
-          [~, name, ~] = fileparts(imageFiles(i).name);
-          labelPath = fullfile(imageFiles(i).folder, 'labels', [name '.json']);
-
-          % Verify label exists
-          if ~isfile(labelPath)
-              warning('Missing label: %s', labelPath);
-              continue;
-          end
-
-          % Load and validate
-          label = jsondecode(fileread(labelPath));
-          img = imread(imgPath);
-
-          % Check bounds
-          for q = 1:numel(label.quads)
-              corners = label.quads(q).corners;
-              if any(corners(:,1) < 0 | corners(:,1) > size(img,2)) || ...
-                 any(corners(:,2) < 0 | corners(:,2) > size(img,1))
-                  warning('Out of bounds corners: %s', imgPath);
-              end
-          end
-      end
-
-      fprintf('Quality check complete.\n');
-  end
-  ```
-
-### 2.3 Split Train/Val Sets
-- [ ] **Task:** Partition augmented data using the phone hold-out rule
-- [ ] **Strategy:** If three or more phone folders exist, dedicate one phone's `augmented_1_dataset/[phone]` subtree (including `aug_000` passthroughs and all `aug_###` augmentations) to validation. When fewer than three phones are available, train on the full dataset and skip validation/test splits.
-- [ ] **Script to Create:** `matlab_scripts/split_dataset.m`
-  ```matlab
-  function split_dataset(datasetRoot, heldOutPhone)
-      % Phone-aware split that keeps aug_000 passthroughs isolated
-      arguments
-          datasetRoot (1, :) char
-          heldOutPhone (1, :) char = ''
-      end
-
-      phoneDirs = dir(datasetRoot);
-      phoneDirs = phoneDirs([phoneDirs.isdir] & ~ismember({phoneDirs.name}, {'.', '..'}));
-      phoneNames = {phoneDirs.name};
-
-      if numel(phoneNames) < 3
-          fprintf('Only %d phone folder(s) detected. Using all data for training; skipping validation split.\n', numel(phoneNames));
-          splits = struct( ...
-              'strategy', 'all_train', ...
-              'trainPhones', {phoneNames}, ...
-              'valPhone', '', ...
-              'notes', 'Validation skipped because fewer than three phones are available.');
-          savejson('', splits, fullfile(datasetRoot, 'dataset_split.json'));
-          return;
-      end
-
-      if isempty(heldOutPhone)
-          heldOutPhone = phoneNames{end};   % Deterministic fallback (e.g., alphabetical order)
-      elseif ~ismember(heldOutPhone, phoneNames)
-          error('Held-out phone "%s" not found under %s', heldOutPhone, datasetRoot);
-      end
-
-      trainPhones = setdiff(phoneNames, heldOutPhone, 'stable');
-
-      splits = struct( ...
-          'strategy', 'phone_holdout', ...
-          'trainPhones', {trainPhones}, ...
-          'valPhone', heldOutPhone, ...
-          'notes', sprintf('Validation uses all real + synthetic samples from %s.', heldOutPhone));
-
-      savejson('', splits, fullfile(datasetRoot, 'dataset_split.json'));
-
-      fprintf('Training phones: %s\n', strjoin(trainPhones, ', '));
-      fprintf('Validation phone: %s\n', heldOutPhone);
-  end
-  ```
-- [ ] **Run:** `split_dataset('augmented_1_dataset', 'realme_c55')` (omit second argument to use default selection)
-- [ ] **Verify:** Confirm `dataset_split.json` lists the expected phones and that the validation phone folder contains the only `aug_000` images outside training
-
----
-
-## Phase 3: Python Training Pipeline (Optimized for 2×A6000)
-
-### 3.1 Project Structure Setup
-- [ ] **Task:** Create Python project structure
-- [ ] **Directories to Create:**
-  ```
-  python/
-  ├── data/
-  │   ├── __init__.py
-  │   ├── dataset.py           # PyTorch dataset loader
-  │   └── transforms.py        # Data augmentation
-  ├── models/
-  │   ├── __init__.py
-  │   ├── corner_net.py        # CornerNet-Lite architecture
-  │   ├── backbone.py          # MobileNetV3 backbone
-  │   └── fpn.py               # Feature Pyramid Network
-  ├── losses/
-  │   ├── __init__.py
-  │   ├── corner_loss.py       # Combined loss function
-  │   ├── focal_loss.py        # Focal loss for heatmaps
-  │   └── embedding_loss.py    # Pull-push loss for grouping
-  ├── utils/
-  │   ├── __init__.py
-  │   ├── postprocess.py       # Corner NMS + grouping
-  │   └── metrics.py           # Evaluation metrics
-  ├── train.py                 # Training script
-  ├── export.py                # ONNX/TFLite export
-  ├── config.py                # Configuration
-  └── requirements.txt         # Dependencies
-  ```
-- [ ] **Install Dependencies:**
+### 3.1 Environment Setup
+- [ ] **Task:** Create dedicated Python environment and install Ultralytics YOLOv11.
+- [ ] **Commands:**
   ```bash
-  pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
-  pip install opencv-python numpy pillow tqdm tensorboard
-  pip install onnx onnxruntime tensorflow
+  python -m venv .venv
+  source .venv/bin/activate  # Windows: .venv\Scripts\activate
+  pip install --upgrade pip
+  pip install "ultralytics>=8.3.0" onnx onnxsim onnxruntime-gpu
+  yolo checks
   ```
-
-### 3.2 PyTorch Dataset Loader
-- [ ] **File:** `python/data/dataset.py`
-- [ ] **Task:** Load JSON labels and images into PyTorch format
-- [ ] **Note:** Currently no Python code exists in repository
-- [ ] **Implementation:**
-  ```python
-  import torch
-  from torch.utils.data import Dataset
-  import json
-  import cv2
-  import numpy as np
-  from pathlib import Path
-
-  class CornerKeypointDataset(Dataset):
-      def __init__(self, data_root, split='train', transform=None):
-          self.data_root = Path(data_root)
-          self.transform = transform
-
-          # Load split
-          split_file = self.data_root / 'dataset_split.json'
-          with open(split_file) as f:
-              splits = json.load(f)
-
-          # Get image paths for this split
-          self.samples = []
-          for phone in (self.data_root).iterdir():
-              if not phone.is_dir():
-                  continue
-
-              for img_path in phone.glob('*.jpg'):
-                  # Extract paper basename
-                  paper_base = img_path.stem.split('_')[0]  # Simplified
-                  if paper_base in splits[split]:
-                      label_path = phone / 'labels' / f'{img_path.stem}.json'
-                      if label_path.exists():
-                          self.samples.append((img_path, label_path))
-
-          print(f'{split} set: {len(self.samples)} samples')
-
-      def __len__(self):
-          return len(self.samples)
-
-      def __getitem__(self, idx):
-          img_path, label_path = self.samples[idx]
-
-          # Load image
-          img = cv2.imread(str(img_path))
-          img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-
-          # Load label
-          with open(label_path) as f:
-              label = json.load(f)
-
-          # Parse corners
-          heatmaps = []
-          offsets = []
-          embeddings = []
-
-          for quad in label['quads']:
-              heatmaps.append(quad['heatmaps'])  # (4, H, W)
-              offsets.append(quad['offsets'])    # (4, 2)
-              embeddings.append(quad['embedding_id'])
-
-          # Convert to tensors
-          img = torch.from_numpy(img).permute(2, 0, 1).float() / 255.0
-          heatmaps = torch.tensor(np.array(heatmaps))
-          offsets = torch.tensor(np.array(offsets))
-          embeddings = torch.tensor(embeddings)
-
-          if self.transform:
-              img = self.transform(img)
-
-          return img, heatmaps, offsets, embeddings
-  ```
-- [ ] **Test:** Load 10 samples, verify shapes are correct
-
-### 3.3 Model Architecture - CornerNet-Lite
-- [ ] **File:** `python/models/corner_net.py`
-- [ ] **Task:** Implement CornerNet-Lite with MobileNetV3 backbone
-- [ ] **Implementation:**
-  ```python
-  import torch
-  import torch.nn as nn
-  from torchvision.models import mobilenet_v3_small
-
-  class QuadCornerNet(nn.Module):
-      def __init__(self, num_corner_types=4):
-          super().__init__()
-
-          # Backbone: MobileNetV3-Small (lightweight, Android-optimized)
-          self.backbone = mobilenet_v3_small(pretrained=True)
-          self.backbone = nn.Sequential(*list(self.backbone.children())[:-1])
-
-          # Lightweight FPN neck
-          self.fpn = LightweightFPN(in_channels=[16, 24, 48, 96], out_channels=64)
-
-          # Multi-head outputs
-          self.heatmap_head = nn.Sequential(
-              nn.Conv2d(64, 64, 3, padding=1),
-              nn.BatchNorm2d(64),
-              nn.ReLU(inplace=True),
-              nn.Conv2d(64, num_corner_types, 1)  # 4 channels: TL, TR, BR, BL
-          )
-
-          self.offset_head = nn.Sequential(
-              nn.Conv2d(64, 64, 3, padding=1),
-              nn.BatchNorm2d(64),
-              nn.ReLU(inplace=True),
-              nn.Conv2d(64, num_corner_types * 2, 1)  # 8 channels: 4×(dx,dy)
-          )
-
-          self.embedding_head = nn.Sequential(
-              nn.Conv2d(64, 64, 3, padding=1),
-              nn.BatchNorm2d(64),
-              nn.ReLU(inplace=True),
-              nn.Conv2d(64, num_corner_types, 1)  # 4 channels: embedding per corner
-          )
-
-      def forward(self, x):
-          # Extract features
-          features = self.backbone(x)
-          features = self.fpn(features)
-
-          # Predict corners
-          heatmaps = torch.sigmoid(self.heatmap_head(features))
-          offsets = self.offset_head(features)
-          embeddings = self.embedding_head(features)
-
-          return heatmaps, offsets, embeddings
-
-  class LightweightFPN(nn.Module):
-      def __init__(self, in_channels, out_channels=64):
-          super().__init__()
-          # Simplified FPN for mobile deployment
-          self.lateral = nn.Conv2d(in_channels[-1], out_channels, 1)
-          self.smooth = nn.Conv2d(out_channels, out_channels, 3, padding=1)
-
-      def forward(self, x):
-          # Simplified: just use highest resolution feature
-          lateral = self.lateral(x)
-          output = self.smooth(lateral)
-          return output
-  ```
-- [ ] **Test:** Forward pass with dummy input, verify output shapes
-
-### 3.4 Loss Functions
-- [ ] **File:** `python/losses/corner_loss.py`
-- [ ] **Task:** Implement combined loss (focal + L1 + embedding)
-- [ ] **Implementation:**
-  ```python
-  import torch
-  import torch.nn as nn
-  import torch.nn.functional as F
-
-  class CornerLoss(nn.Module):
-      def __init__(self, heatmap_weight=1.0, offset_weight=0.5, embedding_weight=0.1):
-          super().__init__()
-          self.heatmap_weight = heatmap_weight
-          self.offset_weight = offset_weight
-          self.embedding_weight = embedding_weight
-
-          self.focal_loss = FocalLoss(alpha=2, beta=4)
-          self.l1_loss = nn.L1Loss(reduction='none')
-          self.embedding_loss = PullPushLoss()
-
-      def forward(self, pred_hm, pred_off, pred_emb, gt_hm, gt_off, gt_emb):
-          # 1. Focal loss for heatmaps (handles extreme class imbalance)
-          hm_loss = self.focal_loss(pred_hm, gt_hm)
-
-          # 2. L1 loss for sub-pixel offsets (CRITICAL for <3px accuracy)
-          # Only compute at positive keypoint locations
-          mask = gt_hm > 0.5
-          if mask.sum() > 0:
-              off_loss = self.l1_loss(pred_off[mask], gt_off[mask]).mean()
-          else:
-              off_loss = torch.tensor(0.0).to(pred_off.device)
-
-          # 3. Embedding loss for grouping corners into quads
-          emb_loss = self.embedding_loss(pred_emb, gt_emb, mask)
-
-          total_loss = (self.heatmap_weight * hm_loss +
-                       self.offset_weight * off_loss +
-                       self.embedding_weight * emb_loss)
-
-          return total_loss, {
-              'heatmap': hm_loss.item(),
-              'offset': off_loss.item() if isinstance(off_loss, torch.Tensor) else 0.0,
-              'embedding': emb_loss.item()
-          }
-
-  class FocalLoss(nn.Module):
-      def __init__(self, alpha=2, beta=4):
-          super().__init__()
-          self.alpha = alpha
-          self.beta = beta
-
-      def forward(self, pred, gt):
-          pos_inds = gt.eq(1).float()
-          neg_inds = gt.lt(1).float()
-
-          neg_weights = torch.pow(1 - gt, self.beta)
-
-          pos_loss = torch.log(pred + 1e-12) * torch.pow(1 - pred, self.alpha) * pos_inds
-          neg_loss = torch.log(1 - pred + 1e-12) * torch.pow(pred, self.alpha) * neg_weights * neg_inds
-
-          num_pos = pos_inds.float().sum()
-          pos_loss = pos_loss.sum()
-          neg_loss = neg_loss.sum()
-
-          if num_pos == 0:
-              loss = -neg_loss
-          else:
-              loss = -(pos_loss + neg_loss) / num_pos
-
-          return loss
-
-  class PullPushLoss(nn.Module):
-      def __init__(self, pull_weight=0.1, push_weight=0.1):
-          super().__init__()
-          self.pull_weight = pull_weight
-          self.push_weight = push_weight
-
-      def forward(self, embeddings, gt_embeddings, mask):
-          # Pull: corners of same quad should have similar embeddings
-          # Push: corners of different quads should have different embeddings
-
-          # Simplified implementation - expand if needed
-          pull_loss = torch.tensor(0.0).to(embeddings.device)
-          push_loss = torch.tensor(0.0).to(embeddings.device)
-
-          return self.pull_weight * pull_loss + self.push_weight * push_loss
-  ```
-- [ ] **Test:** Compute loss on dummy predictions, verify gradients flow
-
-### 3.5 Training Script (2×A6000 Optimized)
-- [ ] **File:** `python/train.py`
-- [ ] **Task:** Multi-GPU training with mixed precision
-- [ ] **Implementation:**
-  ```python
-  import torch
-  import torch.nn as nn
-  from torch.nn.parallel import DistributedDataParallel as DDP
-  import torch.distributed as dist
-  from torch.utils.data import DataLoader
-  from torch.utils.tensorboard import SummaryWriter
-  from tqdm import tqdm
-
-  def setup_distributed():
-      dist.init_process_group(backend='nccl')
-      torch.cuda.set_device(int(os.environ['LOCAL_RANK']))
-
-  def train():
-      # Setup
-      setup_distributed()
-      local_rank = int(os.environ['LOCAL_RANK'])
-
-      # Configuration (hardware-optimized for 2×A6000)
-      config = {
-          'batch_size': 128,       # 128 per GPU = 256 total
-          'num_workers': 32,       # Leverage 256GB RAM
-          'epochs': 150,
-          'lr': 0.002,             # Scaled with batch size
-          'weight_decay': 0.0001,
-          'print_freq': 50,
-      }
-
-      # Create model
-      model = QuadCornerNet().cuda()
-      model = DDP(model, device_ids=[local_rank])
-
-      # Create dataset
-      train_dataset = CornerKeypointDataset(
-          data_root='../augmented_1_dataset',
-          split='train'
-      )
-      val_dataset = CornerKeypointDataset(
-          data_root='../augmented_1_dataset',
-          split='val'
-      )
-      train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
-      train_loader = DataLoader(
-          train_dataset,
-          batch_size=config['batch_size'],
-          num_workers=config['num_workers'],
-          pin_memory=True,
-          sampler=train_sampler
-      )
-      val_loader = DataLoader(
-          val_dataset,
-          batch_size=config['batch_size'],
-          num_workers=config['num_workers'],
-          pin_memory=True
-      )
-
-      # Loss and optimizer
-      criterion = CornerLoss()
-      optimizer = torch.optim.AdamW(
-          model.parameters(),
-          lr=config['lr'],
-          weight_decay=config['weight_decay']
-      )
-      scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
-          optimizer, T_0=30, T_mult=2
-      )
-
-      # Mixed precision training (A6000 optimization)
-      scaler = torch.cuda.amp.GradScaler()
-
-      # Tensorboard
-      if local_rank == 0:
-          writer = SummaryWriter('runs/corner_detection')
-
-      # Training loop
-      best_val_loss = float('inf')
-      for epoch in range(config['epochs']):
-          train_sampler.set_epoch(epoch)
-          model.train()
-
-          train_loss = 0.0
-          pbar = tqdm(train_loader, desc=f'Epoch {epoch+1}/{config["epochs"]}')
-
-          for batch_idx, (imgs, heatmaps, offsets, embeddings) in enumerate(pbar):
-              imgs = imgs.cuda()
-              heatmaps = heatmaps.cuda()
-              offsets = offsets.cuda()
-              embeddings = embeddings.cuda()
-
-              # Mixed precision forward pass
-              with torch.cuda.amp.autocast():
-                  pred_hm, pred_off, pred_emb = model(imgs)
-                  loss, loss_dict = criterion(pred_hm, pred_off, pred_emb,
-                                             heatmaps, offsets, embeddings)
-
-              # Backward pass
-              optimizer.zero_grad()
-              scaler.scale(loss).backward()
-              scaler.step(optimizer)
-              scaler.update()
-
-              train_loss += loss.item()
-              pbar.set_postfix({
-                  'loss': loss.item(),
-                  'hm': loss_dict['heatmap'],
-                  'off': loss_dict['offset'],
-                  'emb': loss_dict['embedding']
-              })
-
-              # Log to tensorboard
-              if local_rank == 0 and batch_idx % config['print_freq'] == 0:
-                  step = epoch * len(train_loader) + batch_idx
-                  writer.add_scalar('train/loss', loss.item(), step)
-                  writer.add_scalar('train/heatmap_loss', loss_dict['heatmap'], step)
-                  writer.add_scalar('train/offset_loss', loss_dict['offset'], step)
-
-          scheduler.step()
-
-          # Validation
-          if local_rank == 0:
-              val_loss = validate(model, val_loader, criterion)
-              writer.add_scalar('val/loss', val_loss, epoch)
-
-              # Save best model
-              if val_loss < best_val_loss:
-                  best_val_loss = val_loss
-                  torch.save(model.module.state_dict(), 'checkpoints/best_model.pth')
-
-              # Save checkpoint
-              if (epoch + 1) % 10 == 0:
-                  torch.save({
-                      'epoch': epoch,
-                      'model_state_dict': model.module.state_dict(),
-                      'optimizer_state_dict': optimizer.state_dict(),
-                      'scheduler_state_dict': scheduler.state_dict(),
-                      'loss': val_loss,
-                  }, f'checkpoints/checkpoint_epoch_{epoch+1}.pth')
-
-  def validate(model, val_loader, criterion):
-      model.eval()
-      val_loss = 0.0
-
-      with torch.no_grad():
-          for imgs, heatmaps, offsets, embeddings in val_loader:
-              imgs = imgs.cuda()
-              heatmaps = heatmaps.cuda()
-              offsets = offsets.cuda()
-              embeddings = embeddings.cuda()
-
-              pred_hm, pred_off, pred_emb = model(imgs)
-              loss, _ = criterion(pred_hm, pred_off, pred_emb,
-                                 heatmaps, offsets, embeddings)
-              val_loss += loss.item()
-
-      return val_loss / len(val_loader)
-
-  if __name__ == '__main__':
-      train()
-  ```
-- [ ] **Launch Script:** `launch_training.sh`
+- [ ] **Verify YOLOv11 availability:**
   ```bash
-  #!/bin/bash
-  torchrun --nproc_per_node=2 --master_port=29500 train.py
+  python -c "from ultralytics import YOLO; print(YOLO('yolo11n-seg.pt'))"
   ```
-- [ ] **Expected Training Time:** 2-3 hours on 2×A6000 (vs 6-8 hours on single GPU)
 
-### 3.6 Export Models
-- [ ] **File:** `python/export.py`
-- [ ] **Task:** Export trained model to ONNX (MATLAB) and TFLite (Android)
-- [ ] **Implementation:**
-  ```python
-  import torch
-  import onnx
-  import tensorflow as tf
-  from models.corner_net import QuadCornerNet
+### 3.2 Dataset Configuration
+- [ ] **Files:**
+  - `configs/micropad_synth.yaml`: synthetic-only split.
+  - `configs/micropad_mixed.yaml`: synthetic + manual labels.
+- [ ] **Template:**
+  ```yaml
+  path: augmented_1_dataset
+  train: images/train.txt
+  val: images/val.txt
 
-  def export_onnx(model_path, output_path='models/corner_net_quad.onnx'):
-      # Load trained model
-      model = QuadCornerNet()
-      model.load_state_dict(torch.load(model_path))
-      model.eval()
-
-      # Dummy input
-      dummy_input = torch.randn(1, 3, 640, 640)
-
-      # Export to ONNX
-      torch.onnx.export(
-          model,
-          dummy_input,
-          output_path,
-          input_names=['input'],
-          output_names=['heatmaps', 'offsets', 'embeddings'],
-          opset_version=13,
-          dynamic_axes={
-              'input': {0: 'batch_size'},
-              'heatmaps': {0: 'batch_size'},
-              'offsets': {0: 'batch_size'},
-              'embeddings': {0: 'batch_size'}
-          }
-      )
-
-      # Verify
-      onnx_model = onnx.load(output_path)
-      onnx.checker.check_model(onnx_model)
-      print(f'ONNX model exported to {output_path}')
-
-  def export_tflite(model_path, output_path='models/corner_net_quad.tflite'):
-      # Convert PyTorch -> ONNX -> TensorFlow -> TFLite
-      # (Requires intermediate steps, or use pytorch-onnx-tensorflow bridge)
-
-      # For now, export ONNX and convert separately using:
-      # onnx-tf convert -i corner_net_quad.onnx -o saved_model/
-      # Then use TFLiteConverter
-
-      converter = tf.lite.TFLiteConverter.from_saved_model('saved_model/')
-      converter.optimizations = [tf.lite.Optimize.DEFAULT]  # Quantization
-      converter.target_spec.supported_ops = [
-          tf.lite.OpsSet.TFLITE_BUILTINS,
-          tf.lite.OpsSet.SELECT_TF_OPS
-      ]
-
-      tflite_model = converter.convert()
-
-      with open(output_path, 'wb') as f:
-          f.write(tflite_model)
-
-      print(f'TFLite model exported to {output_path}')
-
-      # Print model size
-      import os
-      size_mb = os.path.getsize(output_path) / (1024 * 1024)
-      print(f'Model size: {size_mb:.2f} MB')
-
-  if __name__ == '__main__':
-      export_onnx('checkpoints/best_model.pth')
-      export_tflite('checkpoints/best_model.pth')
+  nc: 1
+  names: ['concentration_zone']
   ```
-- [ ] **Run:** `python export.py`
-- [ ] **Verify:** Check ONNX model loads in MATLAB, TFLite model <5MB
+- [ ] **Task:** Manually compose `train.txt` and `val.txt` using phone-directory listings.
+- [ ] **Rule:** If three or more phone folders exist, reserve one entire phone for validation/test; if fewer than three, emit a warning and place all images in the training list.
 
----
+### 3.3 Training Schedule
+- [ ] **Task:** Train synthetic baseline then fine-tune with mixed data.
+- [ ] **Commands:**
+  ```bash
+  # Stage 1: Synthetic pretraining
+  yolo segment train model=yolo11n-seg.pt data=configs/micropad_synth.yaml \
+      epochs=150 imgsz=640 batch=128 device=0,1 \
+      project=micropad_detection name=yolo11n_synth patience=20
+
+  # Stage 2: Fine-tune with real images
+  yolo segment train model=micropad_detection/yolo11n_synth/weights/best.pt \
+      data=configs/micropad_mixed.yaml epochs=80 imgsz=640 batch=96 device=0,1 \
+      project=micropad_detection name=yolo11n_mixed patience=15 lr0=0.01
+  ```
+- [ ] **Note:** Tune hyperparameters (batch size, epochs, learning rate) during training based on validation curves. Target mask mAP@50 > 0.85.
+
+### 3.4 Export Artifacts
+- [ ] **Task:** Export trained weights for MATLAB and Android.
+- [ ] **Commands:**
+  ```bash
+  # ONNX for MATLAB
+  yolo export model=micropad_detection/yolo11n_mixed/weights/best.pt \
+      format=onnx imgsz=640 simplify=True
+
+  # TFLite for Android (start with FP16, try INT8 if speed insufficient)
+  yolo export model=micropad_detection/yolo11n_mixed/weights/best.pt \
+      format=tflite imgsz=640 half=True
+  ```
+- [ ] **Validation:** Load ONNX in MATLAB (`importONNXNetwork`) and run on test image to verify output shape.
+- [ ] **Note:** Benchmark inference speed during Phase 4/5 integration. Optimize quantization (INT8) only if FP16 inference >50ms.
 
 ## Phase 4: MATLAB Integration
 
 ### 4.1 ONNX Inference Wrapper
-- [ ] **File:** `matlab_scripts/detect_quads_onnx.m`
-- [ ] **Task:** Load ONNX model and run inference
-- [ ] **Implementation:** (See detailed implementation in plan above)
-- [ ] **Test Cases:**
-  - [ ] Load ONNX model successfully
-  - [ ] Run inference on 640×640 image
-  - [ ] Verify output shapes: heatmaps (1,4,160,160), offsets (1,8,160,160)
-  - [ ] Test with images of different sizes (should resize automatically)
-  - [ ] Benchmark inference time (target: <100ms on CPU)
-
-### 4.2 Post-Processing Functions
-- [ ] **File:** `matlab_scripts/extract_quads_from_predictions.m`
-- [ ] **Task:** Convert model outputs to quadrilateral coordinates
-- [ ] **Implementation:**
+- [ ] **File:** `matlab_scripts/detect_quads_yolo.m`
+- [ ] **Function Signature:**
   ```matlab
-  function quads = extract_quads_from_predictions(heatmaps, offsets, embeddings, threshold)
-      % Extract quadrilaterals from CornerNet predictions
-
-      if nargin < 4, threshold = 0.3; end
-
-      % Extract corners from heatmaps
-      corners = [];
-      for cornerType = 1:4
-          heatmap = squeeze(heatmaps(1, cornerType, :, :));
-
-          % Non-maximum suppression
-          peakMask = heatmap > threshold;
-          peakMask = peakMask & (heatmap == imdilate(heatmap, strel('disk', 2)));
-
-          [peakY, peakX] = find(peakMask);
-
-          % Apply sub-pixel offsets
-          for p = 1:length(peakX)
-              x = peakX(p);
-              y = peakY(p);
-
-              % Get offsets for this corner
-              offsetIdx = (cornerType - 1) * 2 + 1;
-              dx = offsets(1, offsetIdx, y, x);
-              dy = offsets(1, offsetIdx + 1, y, x);
-
-              % Refined corner position
-              refinedX = (x - 1 + dx) * 4;  % Scale back to original resolution
-              refinedY = (y - 1 + dy) * 4;
-
-              % Get embedding
-              emb = embeddings(1, cornerType, y, x);
-
-              corners = [corners; refinedX, refinedY, cornerType, emb, heatmap(y, x)]; %#ok<AGROW>
-          end
-      end
-
-      if isempty(corners)
-          quads = [];
-          return;
-      end
-
-      % Group corners into quads by embedding similarity
-      quads = groupCornersIntoQuads(corners);
-  end
-
-  function quads = groupCornersIntoQuads(corners)
-      % Group corners into quadrilaterals using embedding similarity
-
-      quads = [];
-      usedCorners = false(size(corners, 1), 1);
-
-      % For each corner, find 3 other corners with different types and similar embeddings
-      for i = 1:size(corners, 1)
-          if usedCorners(i), continue; end
-
-          baseCorner = corners(i, :);
-          baseType = baseCorner(3);
-          baseEmb = baseCorner(4);
-
-          % Find other 3 corner types with similar embeddings
-          candidates = [];
-          for targetType = 1:4
-              if targetType == baseType, continue; end
-
-              % Find closest corner of this type by embedding distance
-              typeMask = corners(:, 3) == targetType & ~usedCorners;
-              if ~any(typeMask), break; end
-
-              typeCorners = corners(typeMask, :);
-              embDist = abs(typeCorners(:, 4) - baseEmb);
-              [minDist, minIdx] = min(embDist);
-
-              if minDist < 0.5  % Embedding threshold
-                  candidates = [candidates; typeCorners(minIdx, :)]; %#ok<AGROW>
-              end
-          end
-
-          % If we found all 4 corners, create quad
-          if size(candidates, 1) == 3
-              quadCorners = [baseCorner; candidates];
-
-              % Order: TL, TR, BR, BL
-              quad = orderCornersClockwise(quadCorners(:, 1:2));
-
-              % Validate geometry
-              if isValidQuadrilateral(quad)
-                  quads = [quads; reshape(quad', 1, 8)]; %#ok<AGROW>
-
-                  % Mark corners as used
-                  for j = 1:size(quadCorners, 1)
-                      idx = find(all(corners(:, 1:2) == quadCorners(j, 1:2), 2), 1);
-                      if ~isempty(idx)
-                          usedCorners(idx) = true;
-                      end
-                  end
-              end
-          end
-      end
-
-      % Reshape to (N, 4, 2)
-      if ~isempty(quads)
-          quads = reshape(quads, [], 4, 2);
-      end
-  end
-
-  function valid = isValidQuadrilateral(corners)
-      % Validate quad geometry
-
-      % Check: No self-intersecting edges
-      if hasSelfIntersection(corners)
-          valid = false;
-          return;
-      end
-
-      % Check: Reasonable aspect ratio
-      width = max(corners(:, 1)) - min(corners(:, 1));
-      height = max(corners(:, 2)) - min(corners(:, 2));
-      aspectRatio = width / height;
-      if aspectRatio < 0.1 || aspectRatio > 10
-          valid = false;
-          return;
-      end
-
-      % Check: Minimum area
-      area = polyarea(corners(:, 1), corners(:, 2));
-      if area < 500  % pixels^2
-          valid = false;
-          return;
-      end
-
-      valid = true;
-  end
-
-  function intersects = hasSelfIntersection(corners)
-      % Check if quadrilateral edges intersect
-      intersects = false;
-
-      % Check all pairs of non-adjacent edges
-      edges = [1 2; 2 3; 3 4; 4 1];
-      for i = 1:4
-          for j = i+2:4
-              if j == i+2 && (i == 1 || i == 2), continue; end  % Adjacent edges
-
-              % Check intersection
-              p1 = corners(edges(i, 1), :);
-              p2 = corners(edges(i, 2), :);
-              p3 = corners(edges(j, 1), :);
-              p4 = corners(edges(j, 2), :);
-
-              if segmentsIntersect(p1, p2, p3, p4)
-                  intersects = true;
-                  return;
-              end
-          end
-      end
-  end
+  function [quads, confidences] = detect_quads_yolo(img, modelPath, confThreshold)
+      % Inputs:
+      %   img: RGB image (H×W×3, uint8 or single)
+      %   modelPath: Path to YOLO ONNX model (default: 'models/yolo11n_best.onnx')
+      %   confThreshold: Minimum confidence (default: 0.5)
+      % Outputs:
+      %   quads: Detected quadrilaterals (N×4×2) in image coordinates
+      %   confidences: Confidence scores per detection (N×1)
   ```
-- [ ] **Test:** Extract quads from model outputs, verify correctness
+- [ ] **Implementation:** Load ONNX model, resize input to 640×640, run inference, parse segmentation masks, convert to quads via `mask_to_quad.m`
+- [ ] **Test:** Run on synthetic and real images, verify detection rate >85%
+
+### 4.2 Post-Processing: Mask-to-Quad Conversion
+- [ ] **File:** `matlab_scripts/mask_to_quad.m`
+- [ ] **Function Signature:**
+  ```matlab
+  function [quad, confidence] = mask_to_quad(mask)
+      % Convert binary mask to 4-vertex quadrilateral
+      % Input: mask (H×W logical or single [0-1])
+      % Output: quad (4×2), confidence (scalar [0-1])
+  ```
+- [ ] **Algorithm:**
+  1. Threshold mask if probability map (>0.5)
+  2. Morphological cleanup: closing + hole filling
+  3. Extract largest contour (`bwboundaries`)
+  4. Simplify to 4-6 points (`reducepoly` or `approxPolyDP`)
+  5. If 4 points: use directly. If >4: fit min-area rectangle (PCA)
+  6. Order clockwise from top-left
+  7. Compute confidence from mask quality (area ratio, shape regularity)
+  8. Return empty if confidence <0.6
+
+- [ ] **Note:** Implement sub-pixel refinement (Harris corner detector) only if initial testing shows >3px errors
 
 ### 4.3 Refactor `cut_concentration_rectangles.m`
-- [ ] **File:** `matlab_scripts/cut_concentration_rectangles.m` (lines 101-106)
-- [ ] **Task:** Add auto-detection mode as alternative to manual selection
-- [ ] **Changes:**
+- [ ] **File:** `matlab_scripts/cut_concentration_rectangles.m`
+- [ ] **Add Parameters:**
   ```matlab
-  % Add new parameters after existing parameters:
   parser.addParameter('autoDetect', false, @islogical);
-  parser.addParameter('detectionModel', 'models/corner_net_quad.onnx', @ischar);
-  parser.addParameter('detectionConfidence', 0.3, @(x) x>=0 && x<=1);
-  parser.addParameter('verifyDetections', true, @islogical);
+  parser.addParameter('detectionModel', 'models/yolo11n_best.onnx', @ischar);
+  parser.addParameter('minConfidence', 0.6, @(x) x>=0 && x<=1);
   ```
-- [ ] **Modify:** `getInitialPolygons()` function (lines 906-916)
+- [ ] **Modify `getInitialPolygons()` function:**
   ```matlab
-  function polygonVertices = getInitialPolygons(img, memory, isFirst, cfg, sliders)
-      % Check if auto-detection is enabled
-      if isfield(cfg, 'autoDetect') && cfg.autoDetect
-          fprintf('  [AUTO-DETECT] Running quad detection...\n');
-
-          % Run detection
-          detectedQuads = detect_quads_onnx(img, cfg.detectionModel, cfg.detectionConfidence);
-
-          if ~isempty(detectedQuads)
-              fprintf('  [AUTO-DETECT] Found %d quadrilaterals\n', size(detectedQuads, 1));
-              polygonVertices = detectedQuads;
-              return;
-          else
-              warning('cut_concentration_rectangles:noDetections', ...
-                  'No quadrilaterals detected (confidence > %.2f). Falling back to manual mode.', ...
-                  cfg.detectionConfidence);
-          end
+  if cfg.autoDetect
+      [detectedQuads, confidences] = detect_quads_yolo(img, cfg.detectionModel, cfg.minConfidence);
+      if ~isempty(detectedQuads)
+          fprintf('Auto-detected %d regions (avg conf: %.2f)\n', size(detectedQuads,1), mean(confidences));
+          polygonVertices = detectedQuads;
+          return;
       end
-
-      % Original manual mode (memory-based or perspective calculation)
-      [imageHeight, imageWidth, ~] = size(img);
-      if memory.hasSettings && ~isFirst && ~isempty(memory.polygons)
-          polygonVertices = scalePolygonsToNewDimensions(...);
-      else
-          polygonVertices = calculatePolygonsFromView(...);
-      end
+      warning('Auto-detection found no regions, falling back to manual mode.');
   end
+  % Continue with manual polygon selection...
   ```
-- [ ] **Usage Example:**
-  ```matlab
-  % Auto-detect mode:
-  cut_concentration_rectangles('autoDetect', true, ...
-                                'detectionConfidence', 0.4);
-
-  % Manual mode (existing):
-  cut_concentration_rectangles('autoDetect', false);
-  ```
-- [ ] **Test Cases:**
-  - [ ] Test auto-detect on synthetic images (should work perfectly)
-  - [ ] Test auto-detect on real images (may need confidence tuning)
-  - [ ] Test fallback to manual mode when no detections
-  - [ ] Test with `verifyDetections=true` (show GUI for review)
-
-### 4.4 Optional: Verification GUI
-- [ ] **File:** `matlab_scripts/showQuadVerificationGUI.m`
-- [ ] **Task:** Show detected quads for user review/correction
-- [ ] **Features:**
-  - Display image with detected quads overlaid
-  - Allow user to accept, reject, or manually adjust
-  - Return modified quads or rejection flag
-- [ ] **Implementation:** (Optional, can be added later)
-
----
+- [ ] **Test:** Run on 10 real images, verify auto-detection works or falls back gracefully
 
 ## Phase 5: Android Integration
 
 ### 5.1 Create Android Project Structure
 - [ ] **Task:** Set up Android Studio project
-- [ ] **Directory Structure:**
+- [ ] **Directory:**
   ```
   android/
   ├── app/
   │   ├── src/main/
   │   │   ├── java/com/micropad/
   │   │   │   ├── QuadDetector.kt
-  │   │   │   ├── CameraActivity.kt
-  │   │   │   └── utils/
+  │   │   │   └── CameraActivity.kt
   │   │   ├── assets/
-  │   │   │   └── corner_net_quad.tflite
+  │   │   │   └── yolov8n_best_int8.tflite
   │   │   └── res/
   │   └── build.gradle
   └── build.gradle
@@ -1432,394 +412,186 @@ This plan integrates with the existing MATLAB-based colorimetric analysis pipeli
 - [ ] **Dependencies:** Add to `app/build.gradle`
   ```gradle
   dependencies {
+      implementation 'com.github.ultralytics:ultralytics-android:1.0.0'
       implementation 'org.tensorflow:tensorflow-lite:2.13.0'
       implementation 'org.tensorflow:tensorflow-lite-gpu:2.13.0'
-      implementation 'org.tensorflow:tensorflow-lite-support:0.4.4'
       implementation 'androidx.camera:camera-core:1.3.0'
       implementation 'androidx.camera:camera-camera2:1.3.0'
       implementation 'androidx.camera:camera-lifecycle:1.3.0'
-      implementation 'androidx.camera:camera-view:1.3.0'
   }
   ```
 
 ### 5.2 TFLite Inference Engine
 - [ ] **File:** `android/app/src/main/java/com/micropad/QuadDetector.kt`
-- [ ] **Task:** Implement TFLite inference with hardware acceleration
-- [ ] **Implementation:** (See detailed implementation in plan above)
-- [ ] **Features:**
-  - NNAPI delegation (Android Neural Networks API)
-  - GPU delegation fallback
-  - CPU with XNNPACK optimization
-  - Sub-pixel corner refinement
-  - Quad validation and grouping
-- [ ] **Test Cases:**
-  - [ ] Load TFLite model from assets
-  - [ ] Run inference on test image
-  - [ ] Verify output quads are correct
-  - [ ] Benchmark inference time on different devices
+- [ ] **Implementation:**
+  ```kotlin
+  class QuadDetector(context: Context) {
+      private val interpreter: Interpreter
+
+      init {
+          val options = Interpreter.Options().apply {
+              addDelegate(GpuDelegate())  // Try GPU, fallback to CPU
+              setNumThreads(4)
+          }
+          interpreter = Interpreter(loadModel(context, "yolo11n_best.tflite"), options)
+      }
+
+      fun detectQuads(bitmap: Bitmap): List<Quad> {
+          val input = preprocessImage(bitmap)  // Resize to 640×640, normalize
+          val output = runInference(input)
+          val masks = parseMasks(output)
+          return masks.map { maskToQuad(it) }.filter { it.confidence > 0.6 }
+      }
+  }
+  ```
+- [ ] **Note:** Optimize inference speed during testing. If >50ms, try NNAPI delegate or INT8 quantization
+- [ ] **Test:** Benchmark on target Android device, verify detection matches MATLAB output
 
 ### 5.3 Camera Integration
 - [ ] **File:** `android/app/src/main/java/com/micropad/CameraActivity.kt`
 - [ ] **Task:** Real-time camera preview with quad overlay
 - [ ] **Features:**
-  - CameraX API for camera access
+  - CameraX API
   - Real-time inference (every N frames)
   - Quad overlay rendering
-  - Confidence indicators
   - Capture button (enabled when quads detected)
-- [ ] **Implementation:**
-  ```kotlin
-  class CameraActivity : AppCompatActivity() {
-      private lateinit var detector: QuadDetector
-      private lateinit var cameraExecutor: ExecutorService
-
-      override fun onCreate(savedInstanceState: Bundle?) {
-          super.onCreate(savedInstanceState)
-          setContentView(R.layout.activity_camera)
-
-          detector = QuadDetector(this)
-          cameraExecutor = Executors.newSingleThreadExecutor()
-
-          startCamera()
-      }
-
-      private fun startCamera() {
-          val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
-
-          cameraProviderFuture.addListener({
-              val cameraProvider = cameraProviderFuture.get()
-
-              // Preview
-              val preview = Preview.Builder()
-                  .build()
-                  .also {
-                      it.setSurfaceProvider(viewFinder.surfaceProvider)
-                  }
-
-              // Image analysis
-              val imageAnalyzer = ImageAnalysis.Builder()
-                  .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                  .build()
-                  .also {
-                      it.setAnalyzer(cameraExecutor, QuadAnalyzer())
-                  }
-
-              // Bind to lifecycle
-              cameraProvider.unbindAll()
-              cameraProvider.bindToLifecycle(
-                  this, CameraSelector.DEFAULT_BACK_CAMERA, preview, imageAnalyzer
-              )
-          }, ContextCompat.getMainExecutor(this))
-      }
-
-      private inner class QuadAnalyzer : ImageAnalysis.Analyzer {
-          override fun analyze(imageProxy: ImageProxy) {
-              val bitmap = imageProxy.toBitmap()
-
-              // Run detection
-              val quads = detector.detectQuads(bitmap, confidence = 0.3f)
-
-              // Update UI
-              runOnUiThread {
-                  overlayView.drawQuads(quads)
-                  captureButton.isEnabled = quads.isNotEmpty()
-              }
-
-              imageProxy.close()
-          }
-      }
-  }
-  ```
 - [ ] **Test:**
   - [ ] Camera preview works
-  - [ ] Quads are detected in real-time
+  - [ ] Quads detected in real-time
   - [ ] Overlay renders correctly
-  - [ ] Capture saves image with quad coordinates
+  - [ ] Capture saves image with coordinates
 
-### 5.4 Quad Overlay View
-- [ ] **File:** `android/app/src/main/java/com/micropad/QuadOverlayView.kt`
-- [ ] **Task:** Custom view for drawing detected quads
-- [ ] **Implementation:**
-  ```kotlin
-  class QuadOverlayView @JvmOverloads constructor(
-      context: Context,
-      attrs: AttributeSet? = null
-  ) : View(context, attrs) {
-
-      private var quads: List<Quad> = emptyList()
-      private val paint = Paint().apply {
-          color = Color.RED
-          strokeWidth = 5f
-          style = Paint.Style.STROKE
-      }
-
-      fun drawQuads(newQuads: List<Quad>) {
-          quads = newQuads
-          invalidate()
-      }
-
-      override fun onDraw(canvas: Canvas) {
-          super.onDraw(canvas)
-
-          for (quad in quads) {
-              val path = Path().apply {
-                  moveTo(quad.topLeft.x, quad.topLeft.y)
-                  lineTo(quad.topRight.x, quad.topRight.y)
-                  lineTo(quad.bottomRight.x, quad.bottomRight.y)
-                  lineTo(quad.bottomLeft.x, quad.bottomLeft.y)
-                  close()
-              }
-              canvas.drawPath(path, paint)
-
-              // Draw confidence
-              val centerX = (quad.topLeft.x + quad.bottomRight.x) / 2
-              val centerY = (quad.topLeft.y + quad.bottomRight.y) / 2
-              canvas.drawText(
-                  "${(quad.confidence * 100).toInt()}%",
-                  centerX, centerY, paint
-              )
-          }
-      }
-  }
-  ```
-- [ ] **Test:** Verify quads render correctly with different perspectives
 
 ---
 
-## Phase 6: Validation & Benchmarking
+## Phase 6: Validation & Deployment
 
-### 6.1 Create Test Dataset
-- [ ] **Task:** Collect real-world test images (not in training set)
-- [ ] **Requirements:**
-  - 200 images from phones not used in training
-  - Diverse lighting conditions
-  - Various viewing angles
-  - Different backgrounds
-- [ ] **Manual Annotation:** Use `cut_concentration_rectangles.m` in manual mode to annotate ground truth
+### 6.1 Model Validation
+- [ ] **Task:** Validate model performance on real data
+- [ ] **Metrics to Verify:**
+  - Detection rate: >85% on real test images (n=20 manually labeled)
+  - Corner accuracy: 95% of corners within 3px (visual inspection + IoU calculation)
+  - MATLAB inference time: <100ms on 4032×3024 images
+  - Android inference time: <50ms on target devices (Samsung A75, Realme C55)
+- [ ] **Cross-Phone Test:** Run inference on all 4 phone datasets, verify generalization
 
-### 6.2 Evaluation Metrics
-- [ ] **File:** `python/evaluate.py`
-- [ ] **Task:** Compute precision, recall, F1-score at 3px threshold
-- [ ] **Metrics:**
-  - Corner Error: Euclidean distance between predicted and ground truth corners
-  - Precision@3px: Percentage of predicted corners within 3px of ground truth
-  - Recall@3px: Percentage of ground truth corners detected within 3px
-  - F1-score@3px: Harmonic mean of precision and recall
-- [ ] **Implementation:**
-  ```python
-  def evaluate_corner_detection(predictions, ground_truth, threshold=3):
-      tp = 0  # True positives
-      fp = 0  # False positives
-      fn = 0  # False negatives
-      errors = []
+### 6.2 Deployment
+- [ ] **MATLAB Package:**
+  - Archive models: `models/yolo11n_micropad/best.onnx`
+  - Scripts: `detect_quads_yolo.m`, `mask_to_quad.m`, updated `cut_concentration_rectangles.m`
+  - Update `CLAUDE.md` with auto-detect usage examples
+- [ ] **Android Release:**
+  - Build signed APK with ProGuard
+  - Test on minimum 2 physical devices
+  - Verify real-time detection works (<50ms inference)
 
-      for pred_quad, gt_quad in zip(predictions, ground_truth):
-          # Match corners (Hungarian algorithm or simple nearest neighbor)
-          for pred_corner in pred_quad:
-              distances = [np.linalg.norm(pred_corner - gt_corner)
-                          for gt_corner in gt_quad]
-              min_dist = min(distances)
-              errors.append(min_dist)
-
-              if min_dist < threshold:
-                  tp += 1
-              else:
-                  fp += 1
-
-          # Unmatched ground truth corners
-          matched_gt = set()
-          for pred_corner in pred_quad:
-              distances = [np.linalg.norm(pred_corner - gt_corner)
-                          for gt_corner in gt_quad]
-              matched_gt.add(np.argmin(distances))
-
-          fn += len(gt_quad) - len(matched_gt)
-
-      precision = tp / (tp + fp) if (tp + fp) > 0 else 0
-      recall = tp / (tp + fn) if (tp + fn) > 0 else 0
-      f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
-
-      return {
-          'precision': precision,
-          'recall': recall,
-          'f1': f1,
-          'mean_error': np.mean(errors),
-          'median_error': np.median(errors),
-          'max_error': np.max(errors)
-      }
-  ```
-- [ ] **Run Evaluation:**
-  ```python
-  python evaluate.py --test_dir test_images/ --model checkpoints/best_model.pth
-  ```
-- [ ] **Target Metrics:**
-  - Precision@3px: >95%
-  - Recall@3px: >95%
-  - Mean Error: <2px
-
-### 6.3 Android Performance Benchmarking
-- [ ] **Task:** Measure inference time on different Android devices
-- [ ] **Test Devices:**
-  - High-end: Samsung Galaxy S23 (Snapdragon 8 Gen 2)
-  - Mid-range: Google Pixel 6a (Tensor G1)
-  - Budget: Samsung Galaxy A54 (Exynos 1380)
-- [ ] **Metrics:**
-  - Inference time (ms)
-  - Memory usage (MB)
-  - Battery drain (%/hour)
-- [ ] **Target Performance:**
-  - High-end: <20ms
-  - Mid-range: <30ms
-  - Budget: <50ms
-
-### 6.4 Error Analysis
-- [ ] **Task:** Analyze failure cases
-- [ ] **Common Failure Modes:**
-  - Extreme occlusion (>3 corners blocked)
-  - Very low lighting (<20 lux)
-  - Motion blur (shutter speed <1/30s)
-  - Extreme perspective (>70° viewing angle)
-- [ ] **Mitigation Strategies:**
-  - Increase augmentation for failure modes
-  - Fine-tune confidence threshold
-  - Add temporal smoothing (mobile app)
-
----
-
-## Phase 7: Deployment & Documentation
-
-### 7.1 MATLAB Deployment
-- [ ] **Task:** Package ONNX model with scripts
-- [ ] **Files to Package:**
-  - `models/corner_net_quad.onnx`
-  - `matlab_scripts/detect_quads_onnx.m`
-  - `matlab_scripts/extract_quads_from_predictions.m`
-  - Updated `matlab_scripts/cut_concentration_rectangles.m`
-- [ ] **Usage Documentation:** Update `CLAUDE.md` with auto-detect examples
-
-### 7.2 Android Deployment
-- [ ] **Task:** Build signed APK for release
-- [ ] **Steps:**
-  - Generate signing key
-  - Configure ProGuard for code shrinking
-  - Build release APK
-  - Test on physical devices
-- [ ] **App Store Preparation:**
-  - Create app icon
-  - Write app description
-  - Screenshot preparation
-
-### 7.3 User Documentation
-- [ ] **Task:** Write comprehensive user guide
-- [ ] **Sections:**
-  - Installation (MATLAB + Android)
-  - Quick start guide
-  - Auto-detect vs manual mode comparison
-  - Troubleshooting common issues
-  - API reference
-- [ ] **File:** `AI_DETECTION_GUIDE.md`
-
-### 7.4 Model Performance Report
-- [ ] **Task:** Document final model performance
-- [ ] **Include:**
-  - Training curves (loss, validation)
-  - Evaluation metrics on test set
-  - Android benchmark results
-  - Model size and inference time
-  - Comparison with manual annotation (inter-annotator agreement)
-- [ ] **File:** `MODEL_PERFORMANCE_REPORT.md`
+### 6.3 Future Improvements (Optional - Implement if Performance Insufficient)
+- [ ] **If detection rate <85%:** Implement test-time augmentation (TTA)
+  - Run inference on original + flipped + brightness-adjusted images
+  - Ensemble predictions via weighted fusion
+  - Expected gain: +2-5% detection rate
+- [ ] **If false positive rate >10%:** Hard negative mining
+  - Collect false positives from validation set
+  - Retrain for 20 epochs with collected negatives
+  - Expected gain: -50% false positive rate
+- [ ] **For continuous improvement:** Active learning loop
+  - Deploy telemetry in Android app
+  - Collect low-confidence predictions (<0.7)
+  - Manually label 50-100 edge cases per iteration
+  - Fine-tune and re-deploy
 
 ---
 
 ## Progress Tracking
 
 ### Overall Status
-- [✅] Phase 1: Refactor `augment_dataset.m` (8/8 tasks complete) - **COMPLETE**
-- [ ] Phase 2: Generate Training Data (0/3 tasks) - **NOT STARTED**
-- [ ] Phase 3: Python Training Pipeline (0/6 tasks) - **NOT STARTED**
-- [ ] Phase 4: MATLAB Integration (0/4 tasks) - **NOT STARTED**
-- [ ] Phase 5: Android Integration (0/4 tasks) - **NOT STARTED**
-- [ ] Phase 6: Validation & Benchmarking (0/4 tasks) - **NOT STARTED**
-- [ ] Phase 7: Deployment & Documentation (0/4 tasks) - **NOT STARTED**
+- [✅] Phase 1: Refactor `augment_dataset.m` (7/8 tasks complete, 88%)
+  - [✅] 1.1-1.2, 1.4-1.8 Complete
+  - [ ] 1.3: YOLOv11 label export (CRITICAL - blocks training)
+- [ ] Phase 2: Dataset Curation & Synthetic Generation (0/3 tasks)
+- [ ] Phase 3: YOLOv11 Training (0/4 tasks)
+- [ ] Phase 4: MATLAB Integration (0/3 tasks)
+- [ ] Phase 5: Android Integration (0/3 tasks)
+- [ ] Phase 6: Validation & Deployment (0/3 tasks)
 
 ### Key Milestones
-- [✅] Augmentation refactor complete (2,736 lines, all features implemented)
-- [ ] 24,000 training samples generated
-- [ ] Model training complete (<3px accuracy achieved)
+- [✅] Augmentation refactor complete
+- [ ] **NEXT:** Implement YOLO label export (Phase 1.3) - BLOCKING
+- [ ] Manual labeling: 50 images × 4 phones
+- [ ] Generate 24,000 synthetic samples
+- [ ] Train YOLOv11n-seg: mask mAP@50 > 0.85
+- [ ] Export ONNX/TFLite models
 - [ ] MATLAB auto-detect functional
-- [ ] Android app real-time detection working
-- [ ] Validation metrics meet targets (>95% precision@3px)
-- [ ] Production deployment ready
-
-### Current Implementation State (2025-10-26)
-
-**Completed:**
-- Phase 1.1-1.8: All augmentation refactoring tasks complete
-- `export_corner_labels()` function implemented (lines 2391-2506)
-- Multi-scale generation implemented with scale subdirectories
-- Configuration structs for corner occlusion and edge degradation
-- Extreme cases probability feature
-- Recent fix: Coordinate transformation from strip-space to original-image-space (commit: dd26fe3)
-
-**Pending:**
-- No augmented dataset directories exist yet (augmented_1_dataset/, augmented_2_concentration_rectangles/, augmented_3_elliptical_regions/)
-- No Python code infrastructure (no python/ or python_codes/ directory)
-- No trained models (no .onnx, .tflite, or .pth files)
-- No MATLAB detection scripts (detect_quads_onnx.m, extract_quads_from_predictions.m)
-- No Android project directory
-
-**Next Priority Task:**
-- Phase 2.1: Generate large-scale training data (24,000+ samples)
-- Requires running augment_dataset.m with appropriate parameters
-- Will populate augmented_* directories with synthetic training data
+- [ ] Android app with real-time detection
 
 ---
 
-## Notes & Decisions
+## Implementation Notes
 
-### Design Decisions
-- **Why CornerNet-Lite?** Direct keypoint prediction avoids mask→polygon conversion loss
-- **Why MobileNetV3?** Best balance of accuracy/speed for mobile deployment
-- **Why sub-pixel offsets?** Critical for <3px accuracy requirement
-- **Why 2×A6000 training?** Enables large batch sizes (256) for stable training
+### Dataset Structure (After Phase 2)
+```
+augmented_1_dataset/
+├── images/
+│   ├── synthetic_001_scale640.jpg
+│   ├── synthetic_001_scale800.jpg
+│   ├── synthetic_001_scale1024.jpg
+│   └── ...
+└── labels/
+    ├── synthetic_001_scale640.txt
+    ├── synthetic_001_scale800.txt
+    ├── synthetic_001_scale1024.txt
+    └── ...
+```
 
-### Implementation Details (Current State)
+### YOLO Label Format
+```
+0 x1 y1 x2 y2 x3 y3 x4 y4
+```
+- `class_id`: 0 (concentration zone only)
+- Coordinates: Normalized [0, 1] (divide by image width/height)
+- Order: TL, TR, BR, BL (clockwise from top-left)
+- Format: Space-separated, one polygon per line
 
-**augment_dataset.m Statistics:**
-- Total lines: 2,736 (expanded from ~2,225 original)
-- Key functions implemented:
-  - `export_corner_labels()` (lines 2391-2506): JSON label export with heatmaps/offsets
-  - `order_corners_clockwise()` (lines 2447-2459): Ensures TL→TR→BR→BL ordering
-  - `generate_gaussian_targets()` (lines 2461-2483): Creates 4 heatmap channels
-  - `compute_subpixel_offsets()` (lines 2485-2506): Sub-pixel precision offsets
-  - Coordinate transformation helpers (lines 2507-2736): Strip-space to image-space conversion
+### Model Architecture: YOLOv11n-seg
 
-**Git History:**
-- Commit 7484fdb: "implementation of AI_DETECTION_PLAN stage 1 completed"
-- Commit dd26fe3: "fix: regenerate passthrough augment outputs" (coordinate transform fix)
-- Commit ee3b26f: "subagent structure is updated" (current HEAD)
+**Why YOLOv11n-seg over alternatives:**
+- **vs YOLOv8:** 22% fewer parameters, better mask precision (83.1%)
+- **vs OBB:** Handles irregular quadrilaterals (perspective distortion, paper defects)
+- **vs RT-DETR:** Better mobile deployment path, smaller model size
+- **vs SAM/MobileSAM:** No prompt required, faster inference, trained end-to-end
 
-**File Structure:**
-- MATLAB scripts: 5 core pipeline scripts (crop_micropad_papers.m, cut_concentration_rectangles.m, cut_elliptical_regions.m, extract_features.m, augment_dataset.m)
-- Dataset directories: 4 phone folders (iphone_11, iphone_15, realme_c55, samsung_a75)
-- Documentation: AI_DETECTION_PLAN.md, auto_detection_tasks.md, CLAUDE.md, AGENTS.md
-
-### Known Limitations
-- Requires at least 2 visible corners per quad
-- Performance degrades at >70° viewing angles
-- Struggles with severe motion blur (shutter <1/30s)
-
-### Future Improvements
-- [ ] Add temporal smoothing for video inference
-- [ ] Support curved/irregular polygons (not just quads)
-- [ ] Multi-task learning (detect + classify chemical type)
-- [ ] Active learning pipeline for continuous improvement
+**Architecture:**
+- Backbone: CSPDarknet with C3k2 blocks (lightweight feature extractor)
+- Neck: Enhanced PAN-FPN (multi-scale feature fusion)
+- Head: Decoupled detection + segmentation heads
+- Output: Instance masks → converted to quadrilateral polygons via post-processing
 
 ---
 
-## Contact & Support
-**Project Lead:** Veysel Y. Yilmaz
-**Last Updated:** 2025-10-27
-**Version:** 1.0.0 (Phase 1 Complete)
-**Repository:** microPAD-colorimetric-analysis
-**Branch:** claude/auto-detect-polygons
+## Critical Success Factors
+
+### Technical Requirements
+1. Corner accuracy: 95% within 3 pixels
+2. Detection rate: >85% on real images (with manual fallback for remaining 15%)
+3. Inference speed: MATLAB <100ms, Android <50ms
+4. Model size: <5MB
+5. Cross-phone generalization: Works on all 4 phone datasets
+
+### Failure Modes & Mitigation
+| Failure Mode | Mitigation Strategy |
+|-------------|---------------------|
+| Auto-detection fails | Graceful fallback to manual polygon selection |
+| Inference too slow | Try INT8 quantization (if FP16 >50ms) |
+| Poor generalization | Cross-phone validation, collect more real labels |
+| False positives | Hard negative mining (Phase 6.3) |
+| Low lighting failures | Already mitigated by augmentation (Phase 1.7 extreme cases) |
+
+---
+
+**Project Lead:** Veysel Y. Yilmaz  
+**Last Updated:** 2025-10-28  
+**Version:** 3.0.0 (YOLOv11n-seg, Streamlined)  
+**Repository:** microPAD-colorimetric-analysis  
+**Branch:** claude/auto-detect-polygons  
+
+**Next Action:** Implement Phase 1.3 (YOLO label export in `augment_dataset.m`)

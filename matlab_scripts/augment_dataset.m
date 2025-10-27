@@ -126,7 +126,11 @@ function augment_dataset(varargin)
         'maxPlacementAttempts', 30, ...
         'brightnessOffsetRange', [-20, 20], ...      % Applied in intensity space (uint8 scale)
         'contrastScaleRange', [0.9, 1.15], ...
-        'noiseStd', 6);                              % Gaussian noise strength in uint8 units
+        'noiseStd', 6, ...                           % Gaussian noise strength in uint8 units
+        'typeWeights', [1, 1, 1], ...                % Sampling weights for [outline, solid, textured]
+        'outlineWidthRange', [1.5, 4.0], ...         % Outline stroke thickness in pixels
+        'textureGainRange', [0.06, 0.18], ...        % Strength of texture modulation (normalized)
+        'textureSurfaceTypes', [1, 2, 3, 4]);        % Background texture primitives to reuse
 
     %% =====================================================================
     %% INPUT PARSING
@@ -1087,11 +1091,18 @@ function bg = composite_to_background(bg, polygonImg, sceneVerts)
         return;
     end
 
+    % Use the synthesized patch mask to support hollow distractors
+    patchMask = any(resized > 0, 3);
+    effectiveMask = targetMask & patchMask;
+    if ~any(effectiveMask(:))
+        return;
+    end
+
     % Composite per-channel using arithmetic (no logical linearization)
     bgRegion = bg(minY:maxY, minX:maxX, :);
 
     % Prepare alpha in double for stable math
-    alpha = double(targetMask);
+    alpha = double(effectiveMask);
 
     % All images are RGB at this point (converted on load)
     for c = 1:3
@@ -1142,7 +1153,8 @@ function [bg, placedCount] = add_polygon_distractors(bg, regions, polygonBboxes,
             continue;
         end
 
-        patch = synthesize_distractor_patch(templatePatch, cfg.texture);
+        patchType = sample_distractor_type(distractorCfg);
+        patch = synthesize_distractor_patch(templatePatch, cfg.texture, distractorCfg, patchType);
         if isempty(patch)
             continue;
         end
@@ -1196,46 +1208,124 @@ function [bg, placedCount] = add_polygon_distractors(bg, regions, polygonBboxes,
     end
 end
 
-function patch = synthesize_distractor_patch(templatePatch, textureCfg)
-    % Create a solid-look synthetic polygon using the original mask as a template.
+function patchType = sample_distractor_type(distractorCfg)
+    % Sample distractor rendering style using configured weights.
+
+    weights = [1, 1, 1];
+    if isfield(distractorCfg, 'typeWeights')
+        candidate = double(distractorCfg.typeWeights(:)');
+        candidate = candidate(isfinite(candidate) & candidate >= 0);
+        if ~isempty(candidate)
+            limit = min(3, numel(candidate));
+            weights(1:limit) = candidate(1:limit);
+        end
+    end
+
+    totalWeight = sum(weights);
+    if totalWeight <= 0
+        weights = [1, 1, 1];
+        totalWeight = 3;
+    end
+
+    cumulative = cumsum(weights);
+    r = rand() * totalWeight;
+    patchType = find(r <= cumulative, 1, 'first');
+    if isempty(patchType)
+        patchType = 2;
+    end
+end
+
+function patch = synthesize_distractor_patch(templatePatch, textureCfg, distractorCfg, patchType)
+    % Create a synthetic distractor polygon using the original mask as a template.
 
     if isempty(templatePatch)
         patch = templatePatch;
         return;
     end
 
-    mask = template_patch_mask(templatePatch);
+    mask = any(templatePatch > 0, 3);
     if ~any(mask(:))
         patch = [];
         return;
     end
 
-    [height, width, numChannels] = size(templatePatch);
+    numChannels = size(templatePatch, 3);
     baseColor = sample_distractor_color(textureCfg, numChannels);
-
-    maskFloat = single(mask);
-    patchFloat = zeros(height, width, numChannels, 'single');
-    baseColorNorm = single(baseColor / 255);
-
-    for c = 1:numChannels
-        patchFloat(:,:,c) = maskFloat * baseColorNorm(c);
+    if nargin < 4 || isempty(patchType) || ~ismember(patchType, 1:3)
+        patchType = 2;
     end
 
-    patchFloat = min(max(patchFloat, 0), 1);
+    maskFloat = single(mask);
+    baseColorNorm = single(baseColor) / 255;
+    [height, width, ~] = size(templatePatch);
+    patchFloat = zeros(height, width, numChannels, 'single');
 
-    patch = convert_float_patch_to_template(patchFloat, templatePatch);
+    switch patchType
+        case 1  % Outline only
+            outlineMask = compute_outline_mask(mask, distractorCfg);
+            if ~any(outlineMask(:))
+                patch = [];
+                return;
+            end
+            outlineFloat = single(outlineMask);
+            strokeScale = 1 + 0.12 * (single(rand(1, numChannels)) - 0.5);
+            strokeScale = max(0.6, min(1.4, strokeScale));
+            for c = 1:numChannels
+                patchFloat(:,:,c) = outlineFloat * (baseColorNorm(c) * strokeScale(c));
+            end
+            activeMask = outlineMask;
 
-    mask3 = repmat(mask, [1, 1, numChannels]);
-    patch(~mask3) = 0;
+        case 3  % Textured fill
+            texture = synthesize_distractor_texture(mask, textureCfg, distractorCfg);
+            channelScale = 1 + 0.10 * (single(rand(1, numChannels)) - 0.5);
+            channelScale = max(0.7, min(1.3, channelScale));
+            for c = 1:numChannels
+                modulation = texture * channelScale(c);
+                patchFloat(:,:,c) = (baseColorNorm(c) + modulation) .* maskFloat;
+            end
+            activeMask = mask;
+
+        otherwise  % Solid fill
+            for c = 1:numChannels
+                patchFloat(:,:,c) = maskFloat * baseColorNorm(c);
+            end
+            activeMask = mask;
+    end
+
+    patch = finalize_distractor_patch(patchFloat, activeMask, templatePatch);
+end
+
+function outlineMask = compute_outline_mask(mask, distractorCfg)
+    % Compute an outline mask from the filled polygon mask.
+
+    thickness = sample_outline_width(distractorCfg);
+    outlineMask = bwperim(mask);
+    if thickness > 1
+        radius = max(0, thickness - 1);
+        se = strel('disk', radius, 0);
+        outlineMask = imdilate(outlineMask, se);
+        outlineMask = outlineMask & mask;
+    end
+
+    if ~any(outlineMask(:))
+        outlineMask = mask;
+    end
+end
+
+function thickness = sample_outline_width(distractorCfg)
+    % Sample outline stroke thickness in pixels.
+
+    range = resolve_range(distractorCfg, 'outlineWidthRange', [1.5, 4.0], 1);
+    widthVal = sample_range_value(range);
+    thickness = max(1, round(widthVal));
 end
 
 function baseColor = sample_distractor_color(textureCfg, numChannels)
-    if nargin < 2
+    if nargin < 2 || isempty(numChannels)
         numChannels = 3;
     end
 
-    surfaceType = randi(4);
-    switch surfaceType
+    switch randi(4)
         case 1  % Uniform surface
             baseRGB = textureCfg.uniformBaseRGB + randi([-textureCfg.uniformVariation, textureCfg.uniformVariation], [1, 3]);
         case 2  % Speckled surface
@@ -1248,10 +1338,8 @@ function baseColor = sample_distractor_color(textureCfg, numChannels)
                 baseRGB = [30, 30, 30] + randi([-5, 5], [1, 3]);
             end
         otherwise  % Skin-like hues
-            h = 0.03 + rand() * 0.07;
-            s = 0.25 + rand() * 0.35;
-            v = 0.55 + rand() * 0.35;
-            baseRGB = round(255 * hsv2rgb([h, s, v]));
+            hsv = [0.03 + rand() * 0.07, 0.25 + rand() * 0.35, 0.55 + rand() * 0.35];
+            baseRGB = round(255 * hsv2rgb(hsv));
     end
 
     baseRGB = max(80, min(220, baseRGB));
@@ -1265,22 +1353,6 @@ function baseColor = sample_distractor_color(textureCfg, numChannels)
         end
     else
         baseColor = baseRGB;
-    end
-end
-
-function mask = template_patch_mask(patch)
-    mask = any(patch > 0, 3);
-end
-
-function patch = convert_float_patch_to_template(patchFloat, templatePatch)
-    if isa(templatePatch, 'uint8')
-        patch = im2uint8(patchFloat);
-    elseif isa(templatePatch, 'uint16')
-        patch = im2uint16(patchFloat);
-    elseif isa(templatePatch, 'single')
-        patch = patchFloat;
-    else
-        patch = cast(patchFloat, 'like', templatePatch);
     end
 end
 
@@ -1300,46 +1372,122 @@ function jittered = jitter_polygon_patch(patch, distractorCfg, mask)
         return;
     end
 
-    if isa(patch, 'uint8')
-        patchFloat = im2single(patch);
-    elseif isa(patch, 'uint16')
-        patchFloat = im2single(patch);
-    else
-        patchFloat = single(patch);
-    end
+    patchFloat = im2single(patch);
 
-    contrastRange = distractorCfg.contrastScaleRange;
-    if numel(contrastRange) ~= 2
-        contrastRange = [1, 1];
-    end
-    contrastScale = contrastRange(1) + rand() * diff(contrastRange);
+    contrastRange = resolve_range(distractorCfg, 'contrastScaleRange', [1, 1], 0);
+    contrastScale = sample_range_value(contrastRange);
 
-    brightnessRange = distractorCfg.brightnessOffsetRange;
-    if numel(brightnessRange) ~= 2
-        brightnessRange = [0, 0];
-    end
-    brightnessOffset = (brightnessRange(1) + rand() * diff(brightnessRange)) / 255;
+    brightnessRange = resolve_range(distractorCfg, 'brightnessOffsetRange', [0, 0]);
+    brightnessOffset = sample_range_value(brightnessRange) / 255;
 
     patchFloat = (patchFloat - 0.5) * contrastScale + 0.5 + brightnessOffset;
 
     if isfield(distractorCfg, 'noiseStd') && distractorCfg.noiseStd > 0
         sigma = distractorCfg.noiseStd / 255;
-        noise = sigma * randn(size(patchFloat), 'like', patchFloat);
-        patchFloat = patchFloat + noise;
+        patchFloat = patchFloat + sigma * randn(size(patchFloat), 'like', patchFloat);
     end
 
-    patchFloat = min(1, max(0, patchFloat));
-    mask3 = repmat(cast(mask, 'like', patchFloat), [1, 1, size(patchFloat, 3)]);
-    patchFloat = patchFloat .* mask3;
+    mask3 = repmat(single(mask), [1, 1, size(patchFloat, 3)]);
+    patchFloat = min(1, max(0, patchFloat .* mask3));
 
-    if isa(patch, 'uint8')
-        jittered = im2uint8(patchFloat);
-    elseif isa(patch, 'uint16')
-        jittered = im2uint16(patchFloat);
-    elseif isa(patch, 'single')
-        jittered = patchFloat;
+    jittered = cast_patch_like_template(patchFloat, patch);
+end
+
+function patch = finalize_distractor_patch(patchFloat, activeMask, templatePatch)
+    if isempty(activeMask) || ~any(activeMask(:))
+        patch = [];
+        return;
+    end
+
+    mask3 = repmat(single(activeMask), [1, 1, size(patchFloat, 3)]);
+    patchFloat = min(1, max(0, patchFloat .* mask3));
+
+    patch = cast_patch_like_template(patchFloat, templatePatch);
+end
+
+function patch = cast_patch_like_template(patchFloat, templatePatch)
+    if isa(templatePatch, 'uint8')
+        patch = im2uint8(patchFloat);
+    elseif isa(templatePatch, 'uint16')
+        patch = im2uint16(patchFloat);
+    elseif isa(templatePatch, 'single')
+        patch = patchFloat;
     else
-        jittered = cast(patchFloat, 'like', patch);
+        patch = cast(patchFloat, 'like', templatePatch);
+    end
+end
+
+function texture = synthesize_distractor_texture(mask, textureCfg, distractorCfg)
+    [height, width] = size(mask);
+
+    surfaceTypes = 1:4;
+    if isfield(distractorCfg, 'textureSurfaceTypes')
+        candidate = unique(round(double(distractorCfg.textureSurfaceTypes(:)')));
+        candidate = candidate(isfinite(candidate) & candidate >= 1 & candidate <= 4);
+        if ~isempty(candidate)
+            surfaceTypes = candidate;
+        end
+    end
+    surfaceType = surfaceTypes(randi(numel(surfaceTypes)));
+
+    texture = generate_surface_texture_base(surfaceType, width, height, textureCfg);
+    texture = single(texture);
+
+    activeVals = texture(mask);
+    if isempty(activeVals)
+        activeVals = single(randn(height * width, 1));
+    end
+    textureMean = mean(activeVals);
+    textureStd = std(activeVals);
+    if ~isfinite(textureStd) || textureStd < eps
+        textureStd = 1;
+    end
+
+    texture = (texture - single(textureMean)) / single(textureStd);
+
+    gainRange = resolve_range(distractorCfg, 'textureGainRange', [0.06, 0.18], 0);
+    gain = sample_range_value(gainRange);
+
+    texture = texture * single(gain);
+end
+
+function range = resolve_range(cfg, fieldName, defaultRange, minValue)
+    if nargin < 4
+        minValue = -inf;
+    end
+
+    range = defaultRange;
+    if isfield(cfg, fieldName)
+        values = double(cfg.(fieldName)(:).');
+        values = values(isfinite(values));
+        if isempty(values)
+            range = defaultRange;
+        elseif numel(values) >= 2
+            range = sort(values(1:2));
+        else
+            range = [values(1), values(1)];
+        end
+    end
+
+    range = max(minValue, range);
+    if numel(range) < 2
+        range = [range(1), range(1)];
+    elseif range(1) > range(2)
+        range(2) = range(1);
+    end
+end
+
+function value = sample_range_value(range)
+    range = range(:).';
+    if isempty(range)
+        value = 0;
+        return;
+    end
+
+    if numel(range) == 1 || range(2) <= range(1)
+        value = range(1);
+    else
+        value = range(1) + rand() * (range(2) - range(1));
     end
 end
 
