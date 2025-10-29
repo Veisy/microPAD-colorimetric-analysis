@@ -1,8 +1,8 @@
 # Quadrilateral Auto-Detection Implementation Plan
 
-**Last Updated:** 2025-10-28
-**Current Phase:** Phase 3 In Progress (2/4 tasks complete)
-**Overall Progress:** Phase 1 complete (8/8); Phase 2 skipped; Phase 3 setup done (2/4)
+**Last Updated:** 2025-10-29
+**Current Phase:** Phase 3 In Progress (3/4 tasks complete)
+**Overall Progress:** Phase 1 complete (8/8); Phase 2 skipped; Phase 3 implementation done (3/4)
 **Architecture:** YOLOv11n Instance Segmentation (Ultralytics) + Enhanced Post-Processing
 
 ## Project Overview
@@ -293,19 +293,35 @@ Integrates with existing MATLAB pipeline (`CLAUDE.md`):
 - [✅] **Validation Strategy:** Reserved samsung_a75 (1 phone) for validation, 3 phones for training
 
 ### 3.3 Training Schedule
-- [ ] **Task:** Train synthetic baseline then fine-tune with mixed data.
-- [ ] **Commands:**
+- [✅] **Task:** Train synthetic baseline then fine-tune with mixed data.
+- [✅] **Implementation:** Created `python_scripts/train_yolo.py` - comprehensive CLI for training, validation, and export
+- [✅] **Files Created:**
+  - `python_scripts/train_yolo.py`: Training script with Stage 1/2 support, validation, export
+  - `python_scripts/WORKSTATION_SETUP.md`: Quick start guide for workstation deployment
+  - Updated `python_scripts/README.md`: Added train_yolo.py usage instructions
+- [✅] **Features:**
+  - Stage 1: Synthetic pretraining (150 epochs, batch 128, dual GPU)
+  - Stage 2: Fine-tuning with mixed data (80 epochs, batch 96, lr0=0.01)
+  - Validation mode: Reports box/mask mAP metrics
+  - Export mode: ONNX (MATLAB) and TFLite (Android) with one command
+  - Auto-detection of project root and dataset configs
+  - Comprehensive error handling and progress reporting
+- [✅] **Commands:**
   ```bash
-  # Stage 1: Synthetic pretraining
-  yolo segment train model=yolo11n-seg.pt data=configs/micropad_synth.yaml \
-      epochs=150 imgsz=640 batch=128 device=0,1 \
-      project=micropad_detection name=yolo11n_synth patience=20
+  # Stage 1: Synthetic pretraining (RECOMMENDED)
+  python train_yolo.py --stage 1
 
-  # Stage 2: Fine-tune with real images
-  yolo segment train model=micropad_detection/yolo11n_synth/weights/best.pt \
-      data=configs/micropad_mixed.yaml epochs=80 imgsz=640 batch=96 device=0,1 \
-      project=micropad_detection name=yolo11n_mixed patience=15 lr0=0.01
+  # Stage 2: Fine-tune with real images (when manual labels ready)
+  python train_yolo.py --stage 2 --weights ../micropad_detection/yolo11n_synth/weights/best.pt
+
+  # Validate model
+  python train_yolo.py --validate --weights ../micropad_detection/yolo11n_synth/weights/best.pt
+
+  # Export to ONNX and TFLite
+  python train_yolo.py --export --weights ../micropad_detection/yolo11n_synth/weights/best.pt
   ```
+- [✅] **Ready for Workstation:** Copy `python_scripts/` and `augmented_1_dataset/` to workstation, follow WORKSTATION_SETUP.md
+- [ ] **Execution Status:** Implementation complete, ready for execution on workstation
 - [ ] **Note:** Tune hyperparameters (batch size, epochs, learning rate) during training based on validation curves. Target mask mAP@50 > 0.85.
 
 ### 3.4 Export Artifacts
@@ -504,11 +520,11 @@ Integrates with existing MATLAB pipeline (`CLAUDE.md`):
 - [⚠️] Phase 2: Dataset Curation & Synthetic Generation (SKIPPED - using existing synthetic data)
   - Phase 2.1-2.2: Deferred (optional manual labeling for fine-tuning)
   - Phase 2.3: Already complete (synthetic data exists in `augmented_1_dataset/`)
-- [🔄] Phase 3: YOLOv11 Training (2/4 tasks complete, 50%)
+- [🔄] Phase 3: YOLOv11 Training (3/4 tasks complete, 75%)
   - [✅] 3.1 Environment Setup (complete)
   - [✅] 3.2 Dataset Configuration (complete)
-  - [ ] 3.3 Training Schedule (pending - run on workstation)
-  - [ ] 3.4 Export Artifacts (pending)
+  - [✅] 3.3 Training Schedule (implementation complete, ready for workstation execution)
+  - [ ] 3.4 Export Artifacts (pending - run after training)
 - [ ] Phase 4: MATLAB Integration (0/3 tasks)
 - [ ] Phase 5: Android Integration (0/3 tasks)
 - [ ] Phase 6: Validation & Deployment (0/3 tasks)
@@ -518,11 +534,12 @@ Integrates with existing MATLAB pipeline (`CLAUDE.md`):
 - [✅] YOLO label export implemented (Phase 1.3 complete)
 - [✅] Python environment setup (Phase 3.1 complete)
 - [✅] Dataset configuration ready (Phase 3.2 complete)
-- [ ] **NEXT:** Train YOLOv11n-seg on workstation (Phase 3.3)
+- [✅] Training infrastructure ready (Phase 3.3 implementation complete)
+- [ ] **NEXT:** Execute training on workstation (Phase 3.3 execution)
 - [ ] Train YOLOv11n-seg: mask mAP@50 > 0.85
-- [ ] Export ONNX/TFLite models
-- [ ] MATLAB auto-detect functional
-- [ ] Android app with real-time detection
+- [ ] Export ONNX/TFLite models (Phase 3.4)
+- [ ] MATLAB auto-detect functional (Phase 4)
+- [ ] Android app with real-time detection (Phase 5)
 
 ---
 
@@ -589,9 +606,9 @@ augmented_1_dataset/
 ---
 
 **Project Lead:** Veysel Y. Yilmaz
-**Last Updated:** 2025-10-28
-**Version:** 3.1.0 (YOLOv11n-seg, Python Setup Complete)
+**Last Updated:** 2025-10-29
+**Version:** 3.2.0 (YOLOv11n-seg, Training Infrastructure Complete)
 **Repository:** microPAD-colorimetric-analysis
 **Branch:** claude/auto-detect-polygons
 
-**Next Action:** Run Phase 3.3 training on workstation with A6000 GPUs
+**Next Action:** Deploy to workstation and execute Phase 3.3 training (see WORKSTATION_SETUP.md)
