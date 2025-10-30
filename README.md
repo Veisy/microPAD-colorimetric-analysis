@@ -64,12 +64,13 @@ The pipeline processes images through **4 sequential stages**. Each stage reads 
 **Input:** Raw smartphone photos in `1_dataset/{phone_model}/`
 **Output:** Individual concentration rectangles in `2_micropads/{phone_model}/con_{N}/`
 
-![Stage 1 to 2](demo_images/stage3_concentration_rectangle.jpeg)
+![Stage 1 to 2](demo_images/stage2_micropad.jpeg)
 
-Processes raw smartphone images in a single step: applies optional rotation, uses AI-powered polygon detection (YOLOv11) to locate test zones, and crops individual concentration regions. Combines the functionality of the previous two-step process into one streamlined workflow.
+Processes raw smartphone images in a single step: applies optional rotation, uses AI-powered polygon detection (YOLOv11 segmentation) to locate test zones, and crops individual concentration regions. Combines the functionality of the previous two-step process into one streamlined workflow.
 
 **Key Features:**
-- AI-based auto-detection of test zones (YOLOv11 segmentation)
+- AI-based auto-detection of test zones (YOLOv11n segmentation, 99.5% mask mAP@50)
+- Graceful fallback to manual polygon selection if auto-detection fails
 - Interactive rotation control with cumulative rotation memory
 - Saves 10-column coordinate format: `image concentration x1 y1 x2 y2 x3 y3 x4 y4 rotation`
 
@@ -82,7 +83,7 @@ Processes raw smartphone images in a single step: applies optional rotation, use
 **Input:** Concentration rectangles from `2_micropads/`
 **Output:** Elliptical patches in `3_elliptical_regions/{phone_model}/con_{N}/`
 
-![Stage 2 to 3](demo_images/stage4_elliptical_region_1.jpeg)
+![Stage 2 to 3](demo_images/stage3_elliptical_region_1.jpeg)
 
 Extracts three elliptical measurement regions from each test zone. In the final microPAD design, these three regions will contain different chemicals (urea, creatinine, lactate). For training purposes, each experiment fills all three regions with the same concentration of a single chemical, providing three replicate measurements per concentration level.
 
@@ -206,7 +207,7 @@ extract_features('preset', 'custom', 'features', customFeatures, 'useDialog', fa
 The extracted features are designed for training AI models that will:
 1. **Predict biomarker concentrations** from smartphone images
 2. **Run on Android smartphones** via embedded TensorFlow Lite models
-3. **Auto-detect test zones** using polygon detection networks
+3. **Auto-detect test zones** using YOLOv11 segmentation (already integrated in MATLAB pipeline)
 
 **Typical ML workflow:**
 ```matlab
@@ -214,8 +215,8 @@ The extracted features are designed for training AI models that will:
 extract_features('preset','robust','chemical','lactate')
 
 % 2. Load train/test splits in Python
-train_df = pd.read_excel('5_extract_features/robust_lactate_train_features.xlsx')
-test_df = pd.read_excel('5_extract_features/robust_lactate_test_features.xlsx')
+train_df = pd.read_excel('4_extract_features/robust_lactate_train_features.xlsx')
+test_df = pd.read_excel('4_extract_features/robust_lactate_test_features.xlsx')
 
 % 3. Train regression model
 X_train = train_df.drop(['PhoneType','ImageName','Label'], axis=1)
@@ -266,7 +267,7 @@ Generates synthetic training data by transforming real microPAD images and conce
 ![Augmented Dataset](demo_images/augmented_dataset_1.jpg)
 *Synthetic scene with transformed microPAD under simulated lighting*
 
-![Augmented Concentration](demo_images/augmented_concentration_rectangle_1.jpeg)
+![Augmented microPAD](demo_images/augmented_micropad_1.jpeg)
 *Augmented concentration region with perspective distortion*
 
 ![Augmented Ellipse](demo_images/augmented_elliptical_region1.jpeg)
@@ -576,8 +577,8 @@ Sample rows from `4_extract_features/robust_lactate_features.xlsx` (showing subs
 This MATLAB pipeline serves as the **data preparation and training infrastructure** for an Android smartphone application that will:
 
 1. **Capture microPAD photos** using the smartphone camera
-2. **Auto-detect test zones** using polygon detection AI (trained on `augmented_1_dataset/`)
-3. **Predict biomarker concentrations** (urea, creatinine, lactate) using regression models (trained on features from `5_extract_features/`)
+2. **Auto-detect test zones** using polygon detection AI (YOLOv11 segmentation - already integrated in MATLAB)
+3. **Predict biomarker concentrations** (urea, creatinine, lactate) using regression models (trained on features from `4_extract_features/`)
 4. **Display results** to the user in real-time
 
 ### **AI Model Training Workflow**
@@ -585,7 +586,7 @@ This MATLAB pipeline serves as the **data preparation and training infrastructur
 ```
 MATLAB Pipeline (this repository)
     ↓
-augmented_1_dataset/ → Train polygon detector (YOLOv11 segmentation)
+augmented_1_dataset/ → Train polygon detector (YOLOv11n segmentation)
     ↓
 4_extract_features/ → Train concentration predictor (Random Forest/XGBoost)
     ↓
@@ -596,7 +597,7 @@ Android Application (separate repository, coming soon)
 
 ### **Key Features of Android App**
 
-- **Real-time detection** - Auto-locate test zones in live camera feed
+- **Real-time detection** - Auto-locate test zones in live camera feed (using YOLOv11n model)
 - **Lighting compensation** - White reference strategy (same as MATLAB pipeline)
 - **Multi-biomarker support** - Separate models for urea, creatinine, lactate
 - **Offline inference** - Embedded TensorFlow Lite models (no internet required)
@@ -604,8 +605,9 @@ Android Application (separate repository, coming soon)
 
 ### **Current Status**
 
-✅ **Completed**: MATLAB data preparation pipeline (this repository)
-🔄 **In Progress**: AI model training and validation
-📋 **Planned**: Android application development
+✅ **Completed**: MATLAB data preparation pipeline (4-stage pipeline)
+✅ **Completed**: AI polygon detection training (YOLOv11n, 99.5% mask mAP@50)
+✅ **Completed**: MATLAB integration with graceful fallback to manual selection
+📋 **Planned**: Android application development with TFLite deployment
 
 Stay tuned for the Android app repository link!

@@ -200,60 +200,42 @@ augment_dataset('numAugmentations', 5, 'rngSeed', 42)
   - Note: `rep{M}` represents replicate measurements (M = 0, 1, 2). In the final microPAD design, these correspond to three different chemicals (urea, creatinine, lactate). During training, all 3 replicates contain the same chemical at the same concentration.
 - Stage 4 features: `{chemical}_features.xlsx`
 
-### Corner Label Files (Augmentation Output)
-When `augment_dataset.m` is run with `exportCornerLabels=true`, it generates training labels for AI polygon detection:
-- **JSON**: `{imageName}.json` - Metadata only (corners, image info, MAT file reference)
-- **MAT**: `{imageName}_heatmaps.mat` - Heatmaps and offsets (HDF5 compressed)
+### YOLO Label Files (Augmentation Output)
+When `augment_dataset.m` is run with `exportYOLOLabels=true`, it generates YOLOv11 segmentation training labels for AI polygon detection:
+- **Format**: `{imageName}.txt` in `labels/` subdirectory
+- **Structure**: One line per polygon, space-separated values
 
 **Format:**
-- JSON structure:
-  ```json
-  {
-    "image_name": "synthetic_001",
-    "image_size": [3000, 4000],
-    "downsample_factor": 4,
-    "heatmap_sigma": 3,
-    "heatmap_format": "mat-v7.3",
-    "heatmap_file": "synthetic_001_heatmaps.mat",
-    "heatmap_dataset": "corner_heatmaps",
-    "offset_dataset": "corner_offsets",
-    "quads": [
-      {
-        "quad_id": 1,
-        "corners": [[x1,y1], [x2,y2], [x3,y3], [x4,y4]],
-        "corners_normalized": [[nx1,ny1], [nx2,ny2], [nx3,ny3], [nx4,ny4]],
-        "embedding_id": 1
-      }
-    ]
-  }
-  ```
-- MAT arrays:
-  - `corner_heatmaps`: (4, H/4, W/4, N) single precision - Gaussian targets per corner type
-  - `corner_offsets`: (4, 2, N) single precision - Sub-pixel offsets [0-1] per corner
+```
+class_id x1 y1 x2 y2 x3 y3 x4 y4
+```
+- `class_id`: Always 0 (concentration zone - single class)
+- `x1 y1 ... x4 y4`: Normalized polygon vertices [0, 1] (divide by image width/height)
+- Vertex order: Clockwise from top-left (TL, TR, BR, BL)
 
-**Loading (MATLAB):**
-```matlab
-data = load('synthetic_001_heatmaps.mat');
-heatmaps = data.corner_heatmaps(:,:,:,1);  % First quad (4, H/4, W/4)
-offsets = data.corner_offsets(:,:,1);      % First quad (4, 2)
+**Example label file (`augmented_1_dataset/labels/synthetic_001.txt`):**
+```
+0 0.234567 0.156789 0.345678 0.167890 0.356789 0.278901 0.245678 0.267890
+0 0.456789 0.389012 0.567890 0.400123 0.578901 0.511234 0.467890 0.500123
 ```
 
-**Loading (Python):**
+**Loading (Python with Ultralytics):**
 ```python
-from scipy.io import loadmat
-import json
+from ultralytics import YOLO
 
-# Load metadata
-with open('synthetic_001.json', 'r') as f:
-    metadata = json.load(f)
-
-# Load heatmaps
-mat_data = loadmat('synthetic_001_heatmaps.mat')
-heatmaps = mat_data['corner_heatmaps'][:,:,:,0]  # First quad (4, H/4, W/4)
-offsets = mat_data['corner_offsets'][:,:,0]      # First quad (4, 2)
+# Train YOLOv11 segmentation model
+model = YOLO('yolo11n-seg.pt')
+model.train(data='micropad_synth.yaml', epochs=150, imgsz=640)
 ```
 
-**Storage Savings:** ~12GB → ~2GB for 24,000 labels (6x reduction with HDF5 compression)
+**Dataset YAML configuration:**
+```yaml
+path: /path/to/augmented_1_dataset
+train: train.txt
+val: val.txt
+nc: 1
+names: ['concentration_zone']
+```
 
 ## Critical Implementation Details
 
@@ -310,7 +292,7 @@ All scripts use `imread_raw()` helper function that:
 - `numAugmentations`: number of synthetic versions per original
 - `independentRotation`: enable per-polygon rotation
 - `occlusionProbability`: thin occlusions across polygons
-- `exportCornerLabels`: emit JSON keypoint labels for passthrough, synthetic, and scale outputs
+- `exportYOLOLabels`: emit YOLOv11 segmentation labels (normalized polygon coordinates)
 - `backgroundWidth/Height`: output dimensions
 
 ### Interactive GUI Sessions

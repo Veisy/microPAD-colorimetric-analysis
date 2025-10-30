@@ -1,10 +1,10 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-- `matlab_scripts/`: Main MATLAB pipeline scripts (`crop_micropad_papers.m`, `cut_concentration_rectangles.m`, `cut_elliptical_regions.m`, `extract_features.m`, `augment_dataset.m`) plus `helper_scripts/` utilities.
-- Stage folders (sequential I/O): `1_dataset/` -> `2_micropad_papers/` -> `3_concentration_rectangles/` -> `4_elliptical_regions/` -> `5_extract_features/`.
-- Augmented data: `augmented_1_dataset/`, `augmented_2_concentration_rectangles/`, `augmented_3_elliptical_regions/`.
-- Corner labels (when exported): JSON metadata + compressed MAT heatmaps (HDF5 format) in `labels/` subdirectory.
+- `matlab_scripts/`: Main MATLAB pipeline scripts (`cut_micropads.m`, `cut_elliptical_regions.m`, `extract_features.m`, `augment_dataset.m`) plus `helper_scripts/` utilities.
+- Stage folders (sequential I/O): `1_dataset/` -> `2_micropads/` -> `3_elliptical_regions/` -> `4_extract_features/`.
+- Augmented data: `augmented_1_dataset/`, `augmented_2_micropads/`, `augmented_3_elliptical_regions/`.
+- YOLO labels (when exported): YOLOv11 segmentation format (normalized polygon coordinates) in `labels/` subdirectory.
 - Image assets and raw datasets are intentionally ignored by Git (see `.gitignore`).
 
 ## Experimental Design
@@ -14,10 +14,10 @@
 - **File naming**: Stage 4 patches use `{base}_con{N}_rep{M}.{ext}` where `rep{M}` (M = 0, 1, 2) represents the 3 replicates.
 
 ## Build, Test, and Development Commands
-- Run a stage (MATLAB): `matlab -batch "addpath('matlab_scripts'); crop_micropad_papers;"`
-- Typical flow: `cut_concentration_rectangles`, `cut_elliptical_regions`, `extract_features('preset','robust','chemical','lactate')`.
+- Run a stage (MATLAB): `matlab -batch "addpath('matlab_scripts'); cut_micropads;"`
+- Typical flow: `cut_micropads('numSquares',7)`, `cut_elliptical_regions`, `extract_features('preset','robust','chemical','lactate')`.
 - Augmentation: `matlab -batch "addpath('matlab_scripts'); augment_dataset('numAugmentations',5);"`
-- Corner labels: pass `'exportCornerLabels', true` to `augment_dataset` for AI training labels (JSON metadata + compressed MAT heatmaps).
+- YOLO labels: pass `'exportYOLOLabels', true` to `augment_dataset` for YOLOv11 segmentation training labels.
 - Tests (if added): `matlab -batch "runtests('matlab_scripts')"`
 - Code analysis: `matlab -batch "checkcode('matlab_scripts/script_name.m')"` (checks for unused variables, best practice violations, performance warnings)
 Notes: Run from repo root or `matlab_scripts/`. Octave is not supported due to GUI/homography/Excel I/O.
