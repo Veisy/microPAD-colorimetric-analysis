@@ -21,8 +21,10 @@ function extract_features(varargin)
     %   No return value.
     %
     % Workflow:
-    % - Expects polygon crops in 2_micropads/phone/con_*/
-    % - Uses elliptical patch coordinates from 3_elliptical_regions/phone/coordinates.txt (phone-level consolidated file)
+    % - Expects polygon crops in <ORIGINAL_IMAGES_FOLDER>/phone/con_*/
+    %   (default: augmented_2_micropads for augmented data, or 2_micropads for original data)
+    % - Uses elliptical patch coordinates from <COORDINATES_FOLDER>/phone/coordinates.txt
+    %   (default: augmented_3_elliptical_regions for augmented data, or 3_elliptical_regions for original data)
     % - Extracts features per patch and aggregates results by concentration replicate
     %
     % Usage:
@@ -2640,8 +2642,6 @@ function allPatchFeatures = processOriginalImageWithCoordinates(imageName, patch
                 if ~isempty(patchFeature)
                     validPatchCount = validPatchCount + 1;
                     patchFeatures{validPatchCount} = patchFeature;
-
-                    %
                 end
             catch patchME
                 warning('extract_features:patchExtractionFailed', ...
@@ -2801,10 +2801,9 @@ function generateConsolidatedExcelFile(cfg)
     end
     
     featureTable = struct2table(allFeatureData);
-    
+
     trainTable = [];
     testTable = [];
-    groupColumnResolved = '';
     requestedGroupColumn = '';
     if isfield(cfg.output, 'splitGroupColumn') && ~isempty(cfg.output.splitGroupColumn)
         requestedGroupColumn = char(cfg.output.splitGroupColumn);
@@ -2922,7 +2921,8 @@ function tableOut = pruneFeatureColumns(tableIn, cfg, groupColumn)
     if ~cfg.output.includeLabelInExcel && any(strcmpi(allColumns, 'Label'))
         columnsToRemove{end+1} = 'Label';
     end
-    
+
+    % Robust preset excludes spatial_uniformity from exports (computed internally only)
     if isfield(cfg, 'featurePreset') && strcmpi(cfg.featurePreset, 'robust')
         robustDropCols = {'spatial_uniformity'};
         columnsToRemove = [columnsToRemove, robustDropCols(ismember(robustDropCols, allColumns))];
