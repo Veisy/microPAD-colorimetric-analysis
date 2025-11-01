@@ -238,6 +238,26 @@ nc: 1
 names: ['concentration_zone']
 ```
 
+## MATLAB-Python Separation of Concerns
+
+**MATLAB Responsibilities (Data Processing):**
+- Stage pipeline (1→2→3 and augmented variants)
+- Image transformations and geometry
+- Coordinate file generation (coordinates.txt)
+- Feature extraction for ML training
+
+**Python Responsibilities (AI Model Training/Inference):**
+- YOLO label generation (reads MATLAB coordinates, creates normalized polygon labels)
+- Model training and evaluation
+- Inference helper scripts (called by MATLAB for predictions)
+
+**Interface:**
+- MATLAB calls Python subprocess (`detect_quads.py`) for AI predictions
+- Python reads MATLAB coordinates (`coordinates.txt`) for label generation
+- No direct MATLAB-Python API coupling (subprocess-based communication)
+
+**Key Principle:** MATLAB scripts should be agnostic to AI model training details. AI training format changes (e.g., switching from YOLO to Faster R-CNN) should only require Python script modifications, not MATLAB changes.
+
 ## Critical Implementation Details
 
 ### Coordinate File Management

@@ -60,6 +60,29 @@ This agent works in the `python_codes/` directory, supporting:
 
 Apply judgment based on project needs, industry standards, and existing patterns. When requirements are genuinely unclear, ask focused questions with relevant context and options.
 
+## Python-MATLAB Integration
+
+**Python handles all AI training and inference:**
+- Reading MATLAB coordinates from `coordinates.txt` files
+- Generating AI training labels (YOLO, Faster R-CNN, etc.)
+- Model training and evaluation
+- Providing inference helper scripts callable from MATLAB
+
+**Interface with MATLAB:**
+- Subprocess-based: MATLAB calls Python scripts via `system()` command
+- Input: MATLAB coordinates in standardized format (10-column for polygons, 7-column for ellipses)
+- Output: AI-specific label formats (YOLO segmentation, COCO JSON, etc.)
+
+**Key Principle:** Python owns AI training pipeline. MATLAB should never generate AI training labels directly - Python reads MATLAB coordinates and converts to appropriate AI format.
+
+**Example workflow:**
+```
+1. MATLAB: Generate augmented data → augmented_1_dataset/, augmented_2_micropads/coordinates.txt
+2. Python: Read coordinates → Generate YOLO labels → augmented_1_dataset/[phone]/labels/
+3. Python: Train model → models/yolo11n_micropad_seg.pt
+4. MATLAB: Call Python inference helper → detect_quads.py → polygon predictions
+```
+
 ## Project Structure
 
 ```

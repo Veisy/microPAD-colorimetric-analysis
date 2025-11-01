@@ -23,6 +23,8 @@ Review MATLAB code for this microPAD colorimetric analysis pipeline, focusing on
 
 ## Pipeline-Specific Checks
 
+**Separation of Concerns**: MATLAB scripts should NOT contain AI training logic (no YOLO label export, no model format code). Flag any AI training concerns that should be moved to Python.
+
 **Stage Dependencies**: Scripts assume correct input folder structure (1_ through 5_ prefixes), coordinate files exist where expected
 
 **Elliptical Patches**: Verify semiMajorAxis/semiMinorAxis/rotationAngle handled correctly, masks properly generated, parent-to-patch mapping intact

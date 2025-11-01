@@ -25,6 +25,8 @@ Review Python code for the microPAD AI pipeline, focusing on real issues that af
 
 ## Project-Specific Checks
 
+**MATLAB Coordinate Reading**: Python scripts that read MATLAB coordinates should handle standard formats correctly (10-column for polygons, 7-column for ellipses). Verify robust parsing with error handling.
+
 **PyTorch Patterns**: Proper use of autocast/GradScaler, DistributedDataParallel setup, checkpoint loading/saving format
 
 **Dataset Implementation**: Train/val/test split integrity (no paper leakage), transform pipelines, keypoint format consistency with MATLAB exports

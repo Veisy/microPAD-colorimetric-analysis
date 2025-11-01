@@ -2,12 +2,13 @@
 Prepare YOLO dataset configuration and train/val splits for microPAD auto-detection.
 
 This script restructures the augmented dataset for YOLO training:
-1. Moves images from augmented_1_dataset/[phone]/ to augmented_1_dataset/[phone]/images/
-2. Keeps labels in augmented_1_dataset/[phone]/labels/ (MATLAB already puts them there)
-3. Creates train.txt and val.txt with absolute paths
+1. Generates YOLO labels from MATLAB coordinates (augmented_2_micropads/coordinates.txt)
+2. Moves images from augmented_1_dataset/[phone]/ to augmented_1_dataset/[phone]/images/
+3. Creates labels in augmented_1_dataset/[phone]/labels/
+4. Creates train.txt and val.txt with absolute paths
 
-MATLAB scripts (augment_dataset.m) generate images in phone root + labels in labels/.
-This Python script restructures for YOLO: images/ and labels/ as siblings.
+MATLAB scripts (augment_dataset.m) generate images and polygon coordinates.
+This Python script converts coordinates to YOLO format and restructures directories.
 
 Configuration:
     - Train phones: iphone_11, iphone_15, realme_c55
@@ -22,6 +23,7 @@ import shutil
 from pathlib import Path
 from typing import List, Tuple
 import yaml
+import cv2
 
 # Configuration
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -110,6 +112,117 @@ def collect_image_paths(phone_dir: str, use_absolute_paths: bool = True) -> List
     return sorted(images)
 
 
+def generate_yolo_labels() -> Tuple[int, int]:
+    """Generate YOLO segmentation labels from MATLAB coordinates.
+
+    Reads polygon coordinates from augmented_2_micropads/[phone]/coordinates.txt
+    and creates YOLOv11 segmentation labels in augmented_1_dataset/[phone]/labels/.
+
+    Format: class_id x1 y1 x2 y2 x3 y3 x4 y4 (normalized [0,1])
+
+    Returns:
+        Tuple of (total_labels_created, total_polygons_processed)
+    """
+    total_labels = 0
+    total_polygons = 0
+
+    micropads_dir = PROJECT_ROOT / "augmented_2_micropads"
+
+    for phone in PHONE_DIRS:
+        coord_file = micropads_dir / phone / "coordinates.txt"
+        if not coord_file.exists():
+            print(f"⚠️  Warning: coordinates.txt not found for {phone}")
+            continue
+
+        labels_dir = AUGMENTED_DATASET / phone / "labels"
+        labels_dir.mkdir(parents=True, exist_ok=True)
+
+        # Read coordinates (format: image concentration x1 y1 x2 y2 x3 y3 x4 y4 rotation)
+        with open(coord_file, 'r') as f:
+            lines = f.readlines()
+
+        # Skip header line if present (case-insensitive, handle whitespace)
+        if lines and lines[0].strip().lower().startswith('image'):
+            lines = lines[1:]
+
+        # Group polygons by image
+        image_polygons = {}
+        for line in lines:
+            parts = line.strip().split()
+            if len(parts) < 10:
+                print(f"⚠️  Warning: malformed coordinate line (expected 10 fields, got {len(parts)}): {line.strip()[:80]}")
+                continue
+
+            img_name = parts[0]
+            # Remove _con_N suffix to get base image name (handles names with underscores)
+            # Format: {base_name}_con_{N} where base_name may contain underscores
+            if '_con_' in img_name:
+                # Find last occurrence of _con_ pattern
+                idx = img_name.rfind('_con_')
+                base_name = img_name[:idx]
+            else:
+                # Fallback: no _con_ suffix (shouldn't happen but safe)
+                base_name = img_name
+
+            # Extract polygon vertices (columns 2-9: x1 y1 x2 y2 x3 y3 x4 y4)
+            vertices = [float(parts[i]) for i in range(2, 10)]
+            polygon = [(vertices[i], vertices[i+1]) for i in range(0, 8, 2)]
+
+            if base_name not in image_polygons:
+                image_polygons[base_name] = []
+            image_polygons[base_name].append(polygon)
+
+        # Get image dimensions and create labels
+        images_dir = AUGMENTED_DATASET / phone / "images"
+        for base_name, polygons in image_polygons.items():
+            # Find corresponding image file
+            img_path = None
+            for ext in ['.jpg', '.jpeg', '.png']:
+                candidate = images_dir / f"{base_name}{ext}"
+                if candidate.exists():
+                    img_path = candidate
+                    break
+
+            if img_path is None:
+                print(f"⚠️  Warning: image not found for {base_name}")
+                continue
+
+            # Get image dimensions
+            img = cv2.imread(str(img_path))
+            if img is None:
+                print(f"⚠️  Warning: failed to read {img_path}")
+                continue
+            height, width = img.shape[:2]
+
+            # Validate coordinates are within image bounds
+            valid_polygons = []
+            for polygon in polygons:
+                if all(0 <= x < width and 0 <= y < height for x, y in polygon):
+                    valid_polygons.append(polygon)
+                else:
+                    print(f"⚠️  Warning: polygon outside image bounds in {base_name} (image: {width}x{height})")
+
+            if not valid_polygons:
+                print(f"⚠️  Warning: no valid polygons for {base_name}, skipping")
+                continue
+
+            # Write label file with only valid polygons
+            label_path = labels_dir / f"{base_name}.txt"
+            with open(label_path, 'w') as f:
+                for polygon in valid_polygons:
+                    # Normalize coordinates to [0, 1]
+                    norm_poly = [(x / width, y / height) for x, y in polygon]
+                    # Write: 0 x1 y1 x2 y2 x3 y3 x4 y4
+                    coords_str = ' '.join([f"{x:.6f} {y:.6f}" for x, y in norm_poly])
+                    f.write(f"0 {coords_str}\n")
+                    total_polygons += 1
+
+            total_labels += 1
+
+    print(f"✅ Generated {total_labels} label files ({total_polygons} polygons)")
+    return total_labels, total_polygons
+
+
 def create_train_val_txt() -> Tuple[int, int]:
     """Create train.txt and val.txt with image paths."""
     # Collect training images (3 phones)
@@ -160,7 +273,7 @@ def create_yolo_config(config_name: str, description: str) -> Path:
     return config_path
 
 
-def print_summary(train_count: int, val_count: int) -> None:
+def print_summary(train_count: int, val_count: int, label_count: int, polygon_count: int) -> None:
     """Print dataset summary."""
     print("\n" + "="*60)
     print("YOLO Dataset Preparation Complete")
@@ -171,6 +284,8 @@ def print_summary(train_count: int, val_count: int) -> None:
     print(f"Train images: {train_count}")
     print(f"Val images: {val_count}")
     print(f"Total images: {train_count + val_count}")
+    print(f"YOLO labels: {label_count} files")
+    print(f"Total polygons: {polygon_count}")
     print(f"Classes: 1 (concentration_zone)")
     print(f"Config directory: {CONFIGS_DIR}")
     print("="*60)
@@ -252,6 +367,11 @@ def main() -> None:
         print(f"✅ Deleted {len(cache_files)} cache files")
         print()
 
+    # Generate YOLO labels from MATLAB coordinates
+    print("Generating YOLO labels from MATLAB coordinates...")
+    label_count, polygon_count = generate_yolo_labels()
+    print()
+
     verify_labels()
     print()
 
@@ -263,7 +383,7 @@ def main() -> None:
         "microPAD Synthetic Dataset - Train on 3 phones, validate on 1 phone"
     )
 
-    print_summary(train_count, val_count)
+    print_summary(train_count, val_count, label_count, polygon_count)
 
 
 if __name__ == "__main__":

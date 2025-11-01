@@ -258,11 +258,20 @@ function cfg = addPathConfiguration(cfg, inputFolder, outputFolder)
     % Resolve model path to absolute path
     cfg.detectionModel = fullfile(projectRoot, cfg.detectionModelRelative);
 
-    % Validate model file if AI detection enabled
-    if cfg.useAIDetection && ~isfile(cfg.detectionModel)
-        warning('cut_micropads:model_missing', ...
-            'AI detection enabled but model not found: %s\nDisabling AI detection.', cfg.detectionModel);
-        cfg.useAIDetection = false;
+    % Resolve Python script path
+    cfg.pythonScriptPath = fullfile(projectRoot, 'python_scripts', 'detect_quads.py');
+
+    % Validate Python script and model file if AI detection enabled
+    if cfg.useAIDetection
+        if ~isfile(cfg.pythonScriptPath)
+            warning('cut_micropads:script_missing', ...
+                'AI detection enabled but Python script not found: %s\nDisabling AI detection.', cfg.pythonScriptPath);
+            cfg.useAIDetection = false;
+        elseif ~isfile(cfg.detectionModel)
+            warning('cut_micropads:model_missing', ...
+                'AI detection enabled but model not found: %s\nDisabling AI detection.', cfg.detectionModel);
+            cfg.useAIDetection = false;
+        end
     end
 
     validatePaths(cfg);
@@ -349,8 +358,6 @@ function processImagesInPhone(phoneName, cfg)
     % Setup Python environment once per phone if AI detection is enabled
     if cfg.useAIDetection
         ensurePythonSetup(cfg.pythonPath);
-        validateModelFile(cfg.detectionModel);
-        loadYOLOModel(cfg.detectionModel);
     end
 
     persistentFig = [];
@@ -412,7 +419,7 @@ function initialPolygons = getInitialPolygons(img, cfg)
     % Get initial polygon positions using AI detection (if enabled) or default geometry
     if cfg.useAIDetection
         try
-            [detectedQuads, confidences] = detectQuadsYOLO(img, cfg.minConfidence, cfg.inferenceSize);
+            [detectedQuads, confidences] = detectQuadsYOLO(img, cfg);
 
             if ~isempty(detectedQuads) && size(detectedQuads, 1) == cfg.numSquares
                 fprintf('  AI detected %d regions (avg confidence: %.2f)\n', ...
@@ -1065,8 +1072,7 @@ function applyRotation_UI(angle, fig, cfg)
     % Re-run AI detection if enabled and recreate polygons
     if cfg.useAIDetection
         try
-            [detectedQuads, ~] = detectQuadsYOLO(guiData.currentImg, ...
-                cfg.minConfidence, cfg.inferenceSize);
+            [detectedQuads, ~] = detectQuadsYOLO(guiData.currentImg, cfg);
 
             if ~isempty(detectedQuads) && size(detectedQuads, 1) == cfg.numSquares
                 % Recreate polygons with AI-detected positions
@@ -1614,13 +1620,12 @@ function ensurePythonSetup(pythonPath)
 
         % Validate Python path is provided
         pythonPath = char(pythonPath);
-        if isempty(pythonPath) || strcmp(pythonPath, 'EDIT_THIS_PATH_TO_YOUR_PYTHON_EXE')
+        if isempty(pythonPath)
             error('cut_micropads:python_not_configured', ...
-                ['Python path not configured!\n\n', ...
-                 'Please edit DEFAULT_PYTHON_PATH (line 79) to point to your Python executable.\n\n', ...
-                 'Alternatively, you can:\n', ...
-                 '  1. Set MICROPAD_PYTHON environment variable, OR\n', ...
-                 '  2. Pass pythonPath parameter: cut_micropads(''pythonPath'', ''C:\\path\\to\\python.exe'')']);
+                ['Python path not configured! Options:\n', ...
+                 '  1. Set MICROPAD_PYTHON environment variable\n', ...
+                 '  2. Pass pythonPath parameter: cut_micropads(''pythonPath'', ''path/to/python'')\n', ...
+                 '  3. Edit DEFAULT_PYTHON_PATH in script (line 79)']);
         end
 
         if ~isfile(pythonPath)
@@ -1628,70 +1633,14 @@ function ensurePythonSetup(pythonPath)
                 'Python executable not found at: %s', pythonPath);
         end
 
-        currentPython = pyenv;
-        if strcmp(currentPython.Version, '')
-            fprintf('Configuring Python environment for auto-detection...\n');
-            pyenv('Version', pythonPath);
-            fprintf('[OK] Python environment configured\n');
-        elseif ~strcmp(currentPython.Executable, pythonPath)
-            warning('cut_micropads:python_mismatch', ...
-                'Python already initialized with different executable:\n  Current: %s\n  Expected: %s\nRestart MATLAB to switch environments.', ...
-                currentPython.Executable, pythonPath);
-        end
-
-        try
-            py.importlib.import_module('ultralytics');
-        catch
-            error('cut_micropads:ultralytics_missing', ...
-                'Ultralytics package not found in Python environment.\nRun: pip install ultralytics');
-        end
-
-        try
-            py.importlib.import_module('cv2');
-        catch
-            error('cut_micropads:opencv_missing', ...
-                'OpenCV package not found in Python environment.\nRun: pip install opencv-python');
-        end
-
-        fprintf('[OK] Setup complete - ready for auto-detection\n\n');
+        fprintf('Python configured: %s\n', pythonPath);
         setupComplete = true;
     catch ME
-        setupComplete = [];  % Clear on error
+        setupComplete = [];
         rethrow(ME);
     end
 end
 
-function validateModelFile(modelPath)
-    if ~isfile(modelPath)
-        error('cut_micropads:model_missing', ...
-            'YOLO model not found: %s\nEnsure model file exists at specified path.', ...
-            modelPath);
-    end
-end
-
-function loadYOLOModel(modelPath)
-    [currentModel, currentPath] = modelCache();
-    if ~isempty(currentModel) && ~isempty(currentPath) && strcmp(currentPath, modelPath)
-        return;
-    end
-
-    fprintf('Loading YOLO model: %s\n', modelPath);
-
-    YOLO = py.getattr(py.importlib.import_module('ultralytics'), 'YOLO');
-    newModel = YOLO(modelPath);
-    modelCache(newModel, modelPath);
-
-    fprintf('[OK] YOLO model loaded and cached\n');
-end
-
-function model = getYOLOModel()
-    model = modelCache();
-
-    if isempty(model)
-        error('cut_micropads:model_not_loaded', ...
-            'YOLO model not loaded. Call loadYOLOModel() first.');
-    end
-end
 
 function I = imread_raw(fname)
     % Read image with EXIF orientation handling for microPAD pipeline
@@ -1747,258 +1696,75 @@ function I = imread_raw(fname)
     end
 end
 
-function [model, modelPath] = modelCache(newModel, newPath)
-    persistent cachedModel
-    persistent cachedModelPath
+function [quads, confidences] = detectQuadsYOLO(img, cfg)
+    % Run YOLO detection via Python helper script (subprocess interface)
 
-    if nargin == 0
-        model = cachedModel;
-        modelPath = cachedModelPath;
-    elseif nargin == 2
-        cachedModel = newModel;
-        cachedModelPath = newPath;
-        model = cachedModel;
-        modelPath = cachedModelPath;
-    else
-        error('cut_micropads:invalid_cache_args', 'modelCache requires 0 or 2 arguments');
+    % Save image to temporary file
+    tmpDir = tempdir;
+    [~, tmpName] = fileparts(tempname);
+    tmpImgPath = fullfile(tmpDir, sprintf('%s_micropad_detect.jpg', tmpName));
+    imwrite(img, tmpImgPath, 'JPEG', 'Quality', 95);
+
+    % Ensure cleanup even if error occurs
+    cleanupObj = onCleanup(@() cleanupTempFile(tmpImgPath));
+
+    % Build command (redirect stderr to stdout to capture all output)
+    cmdRedirect = '2>&1';  % Works on both Windows and Unix
+
+    cmd = sprintf('"%s" "%s" "%s" "%s" --conf %.2f --imgsz %d %s', ...
+        cfg.pythonPath, cfg.pythonScriptPath, tmpImgPath, cfg.detectionModel, ...
+        cfg.minConfidence, cfg.inferenceSize, cmdRedirect);
+
+    % Run detection
+    [status, output] = system(cmd);
+
+    if status ~= 0
+        error('cut_micropads:detection_failed', 'Python detection failed (exit code %d): %s', status, output);
     end
-end
 
-function [quads, confidences] = detectQuadsYOLO(img, confThreshold, inferenceSize)
-    pyImg = py.numpy.array(img);
+    % Parse output (split by newlines - R2019b compatible)
+    lines = strsplit(output, {'\n', '\r\n', '\r'}, 'CollapseDelimiters', false);
+    lines = lines(~cellfun(@isempty, lines));  % Remove empty lines
 
-    model = getYOLOModel();
-
-    results = model.predict(pyImg, ...
-        pyargs('imgsz', int32(inferenceSize), ...
-               'conf', confThreshold, ...
-               'verbose', false));
-
-    result = results{1};
-
-    if isempty(result.masks) || result.masks.data.size(int32(0)) == 0
+    if isempty(lines)
         quads = [];
         confidences = [];
         return;
     end
 
-    numDetections = int32(result.masks.data.size(int32(0)));
+    numDetections = str2double(lines{1});
 
-    quads = zeros(double(numDetections), 4, 2);
-    confidences = zeros(double(numDetections), 1);
+    if numDetections == 0 || isnan(numDetections)
+        quads = [];
+        confidences = [];
+        return;
+    end
 
-    % Use YOLO's pre-scaled contours (already in original image coordinates)
-    for i = 1:double(numDetections)
-        pyIdx = int32(i - 1);
+    quads = zeros(numDetections, 4, 2);
+    confidences = zeros(numDetections, 1);
 
-        % Get confidence
-        confTensor = py.operator.getitem(result.boxes.conf, pyIdx);
-        confCPU = confTensor.cpu();
-        if isa(confCPU, 'py.numpy.ndarray') || isa(confCPU, 'py.float') || isa(confCPU, 'py.int')
-            conf = double(confCPU);
-        else
-            conf = double(confCPU.item());
+    for i = 1:numDetections
+        if i+1 > length(lines)
+            break;
         end
 
-        % Get pre-scaled contour from YOLO (masks.xy provides coordinates in original image space)
-        contourPy = py.operator.getitem(result.masks.xy, pyIdx);
-        if isa(contourPy, 'py.numpy.ndarray')
-            contourNumpy = contourPy;
-        else
-            contourNumpy = contourPy.numpy();
-        end
-        contour = double(contourNumpy);
-
-        % Fit quadrilateral from contour points
-        quad = fitQuadFromContourPoints(contour);
-
-        % Validate quad has exactly 4 vertices
-        if isempty(quad) || size(quad, 1) ~= 4
+        parts = str2double(split(lines{i+1}));
+        if length(parts) < 9
             continue;
         end
 
-        % Convert from 0-indexed to 1-indexed MATLAB coordinates
-        quad = quad + 1;
-
+        % Parse: x1 y1 x2 y2 x3 y3 x4 y4 confidence (0-based from Python)
+        % Convert to MATLAB 1-based indexing
+        vertices = parts(1:8) + 1;
+        quad = reshape(vertices, 2, 4)';  % 4x2 matrix
         quads(i, :, :) = quad;
-        confidences(i) = conf;
+        confidences(i) = parts(9);
     end
 
+    % Filter out empty detections
     validMask = confidences > 0;
     quads = quads(validMask, :, :);
     confidences = confidences(validMask);
-end
-
-function quad = fitQuadFromContourPoints(contour)
-    % Fit quadrilateral from YOLO contour points (already in original image coordinates)
-    % Input: contour is N×2 array of (x,y) points
-    % Output: quad is 4×2 array of corner points in clockwise order from top-left
-
-    if size(contour, 1) < 4
-        quad = [];
-        return;
-    end
-
-    % Use Douglas-Peucker simplification to get 4 corners
-    % Start with aggressive epsilon
-    perimeter = 0;
-    for i = 1:size(contour, 1)-1
-        perimeter = perimeter + norm(contour(i+1,:) - contour(i,:));
-    end
-
-    % Try different epsilon values to get exactly 4 points
-    epsilonFactors = [0.01, 0.02, 0.03, 0.04, 0.05, 0.075, 0.1];
-
-    for k = 1:length(epsilonFactors)
-        epsilon = epsilonFactors(k) * perimeter;
-        approx = douglasPeucker(contour, epsilon);
-
-        if size(approx, 1) == 4
-            quad = orderQuadVertices(approx);
-            return;
-        elseif size(approx, 1) >= 4 && size(approx, 1) <= 6
-            % Close enough, select best 4 corners
-            quad = selectBest4Corners(approx);
-            if ~isempty(quad)
-                quad = orderQuadVertices(quad);
-                return;
-            end
-        end
-    end
-
-    % Fallback: select 4 extreme points
-    quad = selectBest4Corners(contour);
-    if ~isempty(quad)
-        quad = orderQuadVertices(quad);
-    end
-end
-
-function simplified = douglasPeucker(points, epsilon)
-    % Simple Douglas-Peucker algorithm for polygon simplification
-    if size(points, 1) < 3
-        simplified = points;
-        return;
-    end
-
-    % Find point with maximum distance from line between first and last
-    dmax = 0;
-    index = 0;
-    endIdx = size(points, 1);
-
-    for i = 2:(endIdx-1)
-        d = pointLineDistance(points(i,:), points(1,:), points(endIdx,:));
-        if d > dmax
-            index = i;
-            dmax = d;
-        end
-    end
-
-    % If max distance is greater than epsilon, recursively simplify
-    if dmax > epsilon
-        % Recursive call
-        rec1 = douglasPeucker(points(1:index,:), epsilon);
-        rec2 = douglasPeucker(points(index:endIdx,:), epsilon);
-
-        % Build result
-        simplified = [rec1(1:end-1,:); rec2];
-    else
-        simplified = [points(1,:); points(endIdx,:)];
-    end
-end
-
-function dist = pointLineDistance(point, lineStart, lineEnd)
-    % Calculate perpendicular distance from point to line segment
-    if isequal(lineStart, lineEnd)
-        dist = norm(point - lineStart);
-        return;
-    end
-
-    num = abs((lineEnd(1)-lineStart(1))*(lineStart(2)-point(2)) - ...
-              (lineStart(1)-point(1))*(lineEnd(2)-lineStart(2)));
-    den = norm(lineEnd - lineStart);
-    dist = num / den;
-end
-
-function quad = selectBest4Corners(vertices)
-    % Select 4 best corner points from N vertices (N > 4)
-    % Strategy: find extreme points in 4 directions from centroid
-
-    if size(vertices, 1) < 4
-        quad = [];
-        return;
-    end
-
-    if size(vertices, 1) == 4
-        quad = vertices;
-        return;
-    end
-
-    % Compute centroid
-    centroid = mean(vertices, 1);
-
-    % Compute angles from centroid
-    angles = atan2(vertices(:, 2) - centroid(2), vertices(:, 1) - centroid(1));
-
-    % Divide into 4 quadrants and pick furthest point in each
-    quadrants = {[], [], [], []};
-
-    for i = 1:size(vertices, 1)
-        angle = angles(i);
-
-        % Assign to quadrant (4 ranges covering -pi to pi)
-        if angle >= -pi && angle < -pi/2
-            quadIdx = 1;  % Bottom-left
-        elseif angle >= -pi/2 && angle < 0
-            quadIdx = 2;  % Bottom-right
-        elseif angle >= 0 && angle < pi/2
-            quadIdx = 3;  % Top-right
-        else
-            quadIdx = 4;  % Top-left
-        end
-
-        % Compute distance from centroid
-        dist = norm(vertices(i, :) - centroid);
-
-        % Store [vertex_index, distance]
-        quadrants{quadIdx} = [quadrants{quadIdx}; i, dist];
-    end
-
-    % Select furthest point from each quadrant
-    quad = zeros(4, 2);
-    quadCount = 0;
-
-    for q = 1:4
-        if ~isempty(quadrants{q})
-            [~, maxIdx] = max(quadrants{q}(:, 2));
-            vertexIdx = quadrants{q}(maxIdx, 1);
-            quadCount = quadCount + 1;
-            quad(quadCount, :) = vertices(vertexIdx, :);
-        end
-    end
-
-    % If we didn't get 4 points, return empty
-    if quadCount < 4
-        quad = [];
-    else
-        quad = quad(1:4, :);
-    end
-end
-
-function quadOrdered = orderQuadVertices(quad)
-    % Order vertices clockwise from top-left: TL, TR, BR, BL
-    % Matches training label format from augment_dataset.m
-
-    centroid = mean(quad, 1);
-
-    % Sort by angle from centroid (counterclockwise from right horizontal)
-    angles = atan2(quad(:, 2) - centroid(2), quad(:, 1) - centroid(1));
-    [~, order] = sort(angles);
-    quadOrdered = quad(order, :);
-
-    % Rotate array so top-left corner is first
-    % Top-left corner has minimum (x + y) value
-    [~, topLeftIdx] = min(sum(quadOrdered, 2));
-    quadOrdered = circshift(quadOrdered, -topLeftIdx + 1, 1);
 end
 
 %% -------------------------------------------------------------------------
@@ -2083,4 +1849,15 @@ function handleError(ME)
         fprintf('  %s (line %d)\n', ME.stack(i).name, ME.stack(i).line);
     end
     rethrow(ME);
+end
+
+function cleanupTempFile(tmpPath)
+    % Helper to clean up temporary detection image file
+    if isfile(tmpPath)
+        try
+            delete(tmpPath);
+        catch
+            % Silently ignore cleanup errors
+        end
+    end
 end

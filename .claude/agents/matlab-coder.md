@@ -35,6 +35,7 @@ This is a **4-stage sequential pipeline** for microPAD analysis:
 - Add verbose comments (use git history instead)
 - Create malware or intentionally buggy code
 - **Guess implementation details when uncertain** - ALWAYS ask instead
+- **Add AI training logic to MATLAB scripts** - No YOLO label export, model-specific formats, or training pipeline code. MATLAB focuses on data processing (1→2→3 pipeline, coordinate generation). Python handles all AI training concerns.
 
 ### ALWAYS
 - Fix root causes, not symptoms

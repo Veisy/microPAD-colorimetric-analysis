@@ -12,6 +12,7 @@ function augment_dataset(varargin)
     % - Optional photometric augmentation, white-balance jitter, and blur
     % - Optional thin occlusions over polygons (hair/strap-like) for robustness
     % - Variable-density distractor artifacts (1-20 per image, unconstrained placement)
+    % - Polygon-shaped distractor generation for detection robustness
     %
     % Generates synthetic training data by applying geometric and photometric
     % transformations to microPAD paper images and their labeled concentration regions.
@@ -31,24 +32,31 @@ function augment_dataset(varargin)
     %   e) Composite onto procedural background
     %
     % OUTPUT STRUCTURE:
-    %   augmented_1_dataset/[phone]/           - Real copies + synthetic scenes (images directly in phone folder)
-    %   augmented_2_micropads/  - Polygon crops + coordinates.txt
+    %   augmented_1_dataset/[phone]/           - Real copies + synthetic scenes
+    %   augmented_2_micropads/[phone]/con_*/   - Polygon crops + coordinates.txt
+    %   augmented_3_elliptical_regions/[phone]/con_*/ - Elliptical patches + coordinates.txt
     %
     % Parameters (Name-Value):
-% - 'numAugmentations' (positive integer, default 3): synthetic versions per paper
-%   Note: Real captures are always copied; synthetic scenes are labelled *_aug_XXX
+    % - 'numAugmentations' (positive integer, default 10): synthetic versions per paper
+    %   Note: Real captures are always copied; synthetic scenes are labelled *_aug_XXX
     % - 'rngSeed' (numeric, optional): for reproducibility
     % - 'phones' (cellstr/string array): subset of phones to process
-% - 'backgroundWidth' (positive integer, default 4000): optional synthetic background width override
-% - 'backgroundHeight' (positive integer, default 3000): optional synthetic background height override
-% - 'scenePrefix' (char/string, default 'synthetic'): optional synthetic filename prefix
+    % - 'backgroundWidth' (positive integer, default 4000): synthetic background width override
+    % - 'backgroundHeight' (positive integer, default 3000): synthetic background height override
+    % - 'scenePrefix' (char/string, default 'synthetic'): synthetic filename prefix
     % - 'photometricAugmentation' (logical, default true): enable color/lighting variation
-    % - 'blurProbability' (0-1, default 0.25): fraction of samples with slight blur
-    % - 'exportYOLOLabels' (logical, default false): export YOLOv11 segmentation labels as TXT
+    % - 'blurProbability' (0-1, default 0.25): fraction of samples with Gaussian blur
+    % - 'motionBlurProbability' (0-1, default 0.15): fraction of samples with motion blur
+    % - 'occlusionProbability' (0-1, default 0.0): fraction of samples with thin occlusions
+    % - 'independentRotation' (logical, default true): enable per-polygon rotation
+    % - 'extremeCasesProbability' (0-1, default 0.10): fraction using extreme viewpoints
+    % - 'enableDistractorPolygons' (logical, default true): add synthetic look-alike distractors
+    % - 'distractorMultiplier' (numeric, default 0.6): scale factor for distractor count
+    % - 'distractorMaxCount' (integer, default 6): maximum distractors per scene
     %
-% Examples:
-% augment_dataset('numAugmentations', 5, 'rngSeed', 42)  % Copies real data + 5 synthetic scenes
-    % augment_dataset('phones', {'iphone_11'}, 'photometricAugmentation', false)
+    % Examples:
+    %   augment_dataset('numAugmentations', 5, 'rngSeed', 42)
+    %   augment_dataset('phones', {'iphone_11'}, 'photometricAugmentation', false)
 
     %% =====================================================================
     %% CONFIGURATION CONSTANTS
@@ -148,7 +156,6 @@ function augment_dataset(varargin)
     addParameter(parser, 'occlusionProbability', 0.0, @(n) validateattributes(n, {'numeric'}, {'scalar','>=',0,'<=',1}));
     addParameter(parser, 'independentRotation', true, @islogical);
     addParameter(parser, 'extremeCasesProbability', 0.10, @(x) validateattributes(x, {'numeric'}, {'scalar', '>=', 0, '<=', 1}));
-    addParameter(parser, 'exportYOLOLabels', true, @islogical);
     addParameter(parser, 'enableDistractorPolygons', true, @islogical);
     addParameter(parser, 'distractorMultiplier', 0.6, @(x) validateattributes(x, {'numeric'}, {'scalar', '>=', 0}));
     addParameter(parser, 'distractorMaxCount', 6, @(x) validateattributes(x, {'numeric'}, {'scalar','integer','>=',0}));
@@ -202,7 +209,6 @@ function augment_dataset(varargin)
     cfg.artifacts = ARTIFACTS;
     cfg.placement = PLACEMENT;
     cfg.extremeCasesProbability = opts.extremeCasesProbability;
-    cfg.exportYOLOLabels = opts.exportYOLOLabels;
     cfg.distractors = DISTRACTOR_POLYGONS;
     cfg.distractors.enabled = cfg.distractors.enabled && opts.enableDistractorPolygons;
     cfg.distractors.multiplier = max(0, opts.distractorMultiplier);
@@ -415,7 +421,7 @@ function emit_passthrough_sample(paperBase, imgPath, stage1Img, polygons, ellips
     sceneName = sprintf('%s_aug_%03d', baseSceneId, 0);
     sceneFileName = sprintf('%s%s', sceneName, imgExt);
 
-    % Save to phone directory (YOLO-compatible: images in phone folder, labels in labels/ subfolder)
+    % Save to phone directory
     sceneOutPath = fullfile(stage1PhoneOut, sceneFileName);
 
     % Copy original capture. If copy fails, re-encode image.
@@ -536,10 +542,6 @@ function emit_passthrough_sample(paperBase, imgPath, stage1Img, polygons, ellips
     write_stage2_coordinates(stage2Coords, stage2PhoneOut, cfg.files.coordinates);
     if s3Count > 0
         write_stage3_coordinates(stage3Coords, stage3PhoneOut, cfg.files.coordinates);
-    end
-
-    if cfg.exportYOLOLabels
-        export_yolo_segmentation_labels(stage1PhoneOut, sceneName, polygonCells, size(stage1Img));
     end
 
     fprintf('     Passthrough: %s (%d polygons, %d ellipses)\n', ...
@@ -900,15 +902,10 @@ function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap
         background = imgaussfilt(background, blurSigma);
     end
 
-    % Save synthetic scene (stage 1 output) - YOLO-compatible structure
+    % Save synthetic scene (stage 1 output)
     sceneFileName = sprintf('%s%s', sceneName, '.jpg');
     sceneOutPath = fullfile(stage1PhoneOut, sceneFileName);
     imwrite(background, sceneOutPath, 'JPEG', 'Quality', cfg.jpegQuality);
-
-    % Export YOLO segmentation labels
-    if cfg.exportYOLOLabels
-        export_yolo_segmentation_labels(stage1PhoneOut, sceneName, scenePolygons, size(background));
-    end
 
     % Trim coordinate arrays to actual size
     stage2Coords = stage2Coords(1:s2Count);
@@ -3115,49 +3112,3 @@ function projectRoot = find_project_root(inputFolder)
     projectRoot = currentDir;
 end
 
-%% =========================================================================
-%% YOLO SEGMENTATION LABEL EXPORT FUNCTIONS (Phase 1.3)
-%% =========================================================================
-
-function export_yolo_segmentation_labels(outputDir, imageName, polygons, imageSize)
-    % Export YOLOv11 segmentation format: class_id x1 y1 x2 y2 x3 y3 x4 y4 (normalized)
-
-    labelDir = fullfile(outputDir, 'labels');
-    if ~isfolder(labelDir), mkdir(labelDir); end
-
-    labelPath = fullfile(labelDir, [imageName '.txt']);
-    tmpPath = tempname(labelDir);
-    fid = fopen(tmpPath, 'wt');
-
-    for i = 1:numel(polygons)
-        quad = polygons{i};
-
-        % Order corners clockwise from top-left
-        quad = order_corners_clockwise(quad);
-
-        % Normalize to [0, 1]
-        normQuad = quad ./ [imageSize(2), imageSize(1)];
-
-        % Write: 0 x1 y1 x2 y2 x3 y3 x4 y4
-        fprintf(fid, '0');
-        fprintf(fid, ' %.6f %.6f', normQuad');
-        fprintf(fid, '\n');
-    end
-
-    fclose(fid);
-    movefile(tmpPath, labelPath, 'f');
-end
-
-function quad_ordered = order_corners_clockwise(quad)
-    % Order vertices: TL, TR, BR, BL (clockwise from top-left)
-    % Method: Sort by angle from centroid, then rotate to start from top-left
-
-    centroid = mean(quad, 1);
-    angles = atan2(quad(:,2) - centroid(2), quad(:,1) - centroid(1));
-    [~, order] = sort(angles);
-    quad_ordered = quad(order, :);
-
-    % Ensure top-left corner is first (minimum distance from origin)
-    [~, topLeftIdx] = min(sum(quad_ordered.^2, 2));
-    quad_ordered = circshift(quad_ordered, -topLeftIdx + 1, 1);
-end
