@@ -10,7 +10,7 @@ function cut_micropads(varargin)
     %
     % Features:
     %   - Interactive rotation adjustment with memory
-    %   - AI-powered polygon detection (YOLOv11n-seg)
+    %   - AI-powered polygon detection (YOLOv11m-pose)
     %   - Manual polygon editing and refinement
     %   - Saves polygon coordinates with rotation angle
     %
@@ -22,7 +22,7 @@ function cut_micropads(varargin)
     % - 'inputFolder' | 'outputFolder': override default I/O folders
     % - 'preserveFormat' | 'jpegQuality' | 'saveCoordinates': output behavior
     % - 'useAIDetection': use YOLO for initial polygon placement (default: true)
-    % - 'detectionModel': path to YOLOv11 model (default: 'models/yolo11m_micropad_seg.pt')
+    % - 'detectionModel': path to YOLOv11 pose model (default: 'models/yolo11m_micropad_pose.pt')
     % - 'minConfidence': minimum detection confidence (default: 0.6)
     % - 'inferenceSize': YOLO inference image size in pixels (default: 1280)
     % - 'pythonPath': path to Python executable (default: '' - uses MICROPAD_PYTHON env var)
@@ -75,7 +75,7 @@ function cut_micropads(varargin)
 
     % === AI DETECTION DEFAULTS ===
     DEFAULT_USE_AI_DETECTION = true;
-    DEFAULT_DETECTION_MODEL = 'models/yolo11m_micropad_seg.pt';
+    DEFAULT_DETECTION_MODEL = 'models/yolo11m_micropad_pose.pt';
     DEFAULT_MIN_CONFIDENCE = 0.6;
 
     % IMPORTANT: Edit this path to match your Python installation!

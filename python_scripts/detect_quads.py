@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """
-Standalone YOLO inference script for microPAD quad detection.
+Standalone YOLO inference script for microPAD quad detection using pose keypoints.
 
 Called by MATLAB cut_micropads.m to perform AI-based polygon detection.
 Accepts image path and outputs detected quad coordinates to stdout.
+
+This script uses YOLOv11-pose to detect quadrilateral concentration zones on microPAD
+images by predicting 4 corner keypoints directly. No polygon simplification is needed.
 
 Usage:
     python detect_quads.py <image_path> <model_path> [--conf THRESHOLD] [--imgsz SIZE]
@@ -16,23 +19,23 @@ Output Format (stdout):
 
 Note: Coordinates are 0-based (Python/OpenCV convention).
       MATLAB code must add 1 for 1-based indexing.
+      Keypoints are ordered clockwise from top-left: TL, TR, BR, BL.
 """
 
 import sys
 import argparse
 from pathlib import Path
-from typing import Optional
+from typing import Tuple, List
 import numpy as np
-import cv2
 
 
 def parse_args():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
-        description="YOLO quad detection for microPAD analysis"
+        description="YOLO pose-based quad detection for microPAD analysis"
     )
     parser.add_argument("image_path", type=str, help="Path to input image")
-    parser.add_argument("model_path", type=str, help="Path to YOLO model (.pt)")
+    parser.add_argument("model_path", type=str, help="Path to YOLO pose model (.pt)")
     parser.add_argument(
         "--conf", type=float, default=0.6, help="Confidence threshold (default: 0.6)"
     )
@@ -42,54 +45,17 @@ def parse_args():
     return parser.parse_args()
 
 
-def fit_quad_from_contour(contour: np.ndarray) -> Optional[np.ndarray]:
-    """Fit quadrilateral from YOLO contour points using Douglas-Peucker.
-
-    Args:
-        contour: Numpy array of contour points (Nx2), float or int dtype
-
-    Returns:
-        4x2 numpy array (dtype=float64) of quad vertices (clockwise from top-left),
-        or None if fitting failed
-    """
-    if len(contour) < 4:
-        return None
-
-    # Calculate perimeter
-    perimeter = cv2.arcLength(contour, closed=True)
-
-    # Try Douglas-Peucker with increasing epsilon (matches MATLAB implementation)
-    for epsilon_factor in [0.01, 0.02, 0.03, 0.04, 0.05, 0.075, 0.1]:
-        epsilon = epsilon_factor * perimeter
-        approx = cv2.approxPolyDP(contour, epsilon, closed=True)
-
-        if len(approx) == 4:
-            # Reshape to (4, 2)
-            quad = approx.reshape(4, 2).astype(np.float64)
-            return order_corners_clockwise(quad)
-
-    # Fallback: use 4 corners from convex hull or minAreaRect
-    hull = cv2.convexHull(contour)
-    if len(hull) == 4:
-        return order_corners_clockwise(hull.reshape(4, 2).astype(np.float64))
-
-    # Last resort: use minAreaRect
-    rect = cv2.minAreaRect(contour)
-    box = cv2.boxPoints(rect)
-    return order_corners_clockwise(box.astype(np.float64))
-
-
-def order_corners_clockwise(quad):
+def order_corners_clockwise(quad: np.ndarray) -> np.ndarray:
     """Order vertices clockwise starting from top-left.
 
     Top-left is defined as the corner with minimum (x + y).
-    Clockwise order from that corner matches MATLAB's orderQuadVertices.
+    Clockwise order from that corner ensures consistent vertex ordering.
 
     Args:
         quad: 4x2 numpy array of corner coordinates
 
     Returns:
-        4x2 numpy array ordered clockwise from top-left
+        4x2 numpy array ordered clockwise from top-left (TL, TR, BR, BL)
     """
     # Find top-left corner (minimum x + y)
     sum_coords = quad[:, 0] + quad[:, 1]  # x + y for each corner
@@ -113,21 +79,100 @@ def order_corners_clockwise(quad):
     return quad_ordered
 
 
-def detect_quads(image_path, model_path, conf_threshold=0.6, imgsz=640):
-    """Run YOLO inference and extract quad coordinates.
+def compute_iou(box1: np.ndarray, box2: np.ndarray) -> float:
+    """Compute Intersection over Union (IoU) between two bounding boxes.
+
+    Args:
+        box1: Array [x_min, y_min, x_max, y_max]
+        box2: Array [x_min, y_min, x_max, y_max]
+
+    Returns:
+        IoU score (0.0 to 1.0)
+    """
+    # Compute intersection area
+    x_min_inter = max(box1[0], box2[0])
+    y_min_inter = max(box1[1], box2[1])
+    x_max_inter = min(box1[2], box2[2])
+    y_max_inter = min(box1[3], box2[3])
+
+    if x_max_inter < x_min_inter or y_max_inter < y_min_inter:
+        return 0.0
+
+    intersection = (x_max_inter - x_min_inter) * (y_max_inter - y_min_inter)
+
+    # Compute union area
+    area1 = (box1[2] - box1[0]) * (box1[3] - box1[1])
+    area2 = (box2[2] - box2[0]) * (box2[3] - box2[1])
+    union = area1 + area2 - intersection
+
+    return intersection / union if union > 0 else 0.0
+
+
+def apply_nms(quads: List[np.ndarray], confidences: List[float], iou_threshold: float = 0.20) -> Tuple[List[np.ndarray], List[float]]:
+    """Apply Non-Maximum Suppression to remove overlapping detections.
+
+    Args:
+        quads: List of 4x2 keypoint arrays
+        confidences: List of confidence scores
+        iou_threshold: IoU threshold for suppression (default: 0.20)
+
+    Returns:
+        Tuple of (filtered_quads, filtered_confidences)
+    """
+    if len(quads) == 0:
+        return [], []
+
+    # Convert quads to bounding boxes [x_min, y_min, x_max, y_max]
+    boxes = []
+    for quad in quads:
+        x_coords = quad[:, 0]
+        y_coords = quad[:, 1]
+        boxes.append([x_coords.min(), y_coords.min(), x_coords.max(), y_coords.max()])
+    boxes = np.array(boxes)
+
+    # Sort by confidence (descending)
+    indices = np.argsort(confidences)[::-1]
+
+    keep = []
+    while len(indices) > 0:
+        # Keep highest confidence detection
+        current = indices[0]
+        keep.append(current)
+
+        if len(indices) == 1:
+            break
+
+        # Compute IoU with remaining detections
+        current_box = boxes[current]
+        remaining_boxes = boxes[indices[1:]]
+
+        ious = np.array([compute_iou(current_box, box) for box in remaining_boxes])
+
+        # Remove detections with IoU > threshold
+        indices = indices[1:][ious <= iou_threshold]
+
+    # Return filtered results
+    filtered_quads = [quads[i] for i in keep]
+    filtered_confidences = [confidences[i] for i in keep]
+
+    return filtered_quads, filtered_confidences
+
+
+def detect_quads(image_path: str, model_path: str, conf_threshold: float = 0.6, imgsz: int = 640) -> Tuple[List[np.ndarray], List[float]]:
+    """Run YOLO pose inference and extract keypoint coordinates.
 
     Args:
         image_path: Path to input image
-        model_path: Path to YOLO model (.pt file)
+        model_path: Path to YOLO pose model (.pt file)
         conf_threshold: Confidence threshold for detections
         imgsz: Inference image size
 
     Returns:
-        Tuple of (quads, confidences) where quads is list of 4x2 arrays
+        Tuple of (quads, confidences) where quads is list of 4x2 keypoint arrays
     """
     from ultralytics import YOLO
 
-    # Load model
+    # Load pose model
     model = YOLO(model_path)
 
     # Run inference
@@ -141,30 +186,30 @@ def detect_quads(image_path, model_path, conf_threshold=0.6, imgsz=640):
     result = results[0]
 
     # Check if any detections exist
-    if result.masks is None or len(result.masks.data) == 0:
+    if result.keypoints is None or len(result.keypoints.data) == 0:
         return [], []
 
     quads = []
     confidences = []
 
+    # Extract keypoints from pose model
+    # result.keypoints.xy shape: [N, 4, 2] for N detections, 4 keypoints, (x, y) coords
+    keypoints_xy = result.keypoints.xy.cpu().numpy()
+    boxes_conf = result.boxes.conf.cpu().numpy()
+
     # Process each detection
-    for i, (mask_xy, conf) in enumerate(zip(result.masks.xy, result.boxes.conf)):
-        # Handle both tensor and numpy array inputs
-        if hasattr(mask_xy, 'cpu'):
-            contour = mask_xy.cpu().numpy()
-        else:
-            contour = np.array(mask_xy) if not isinstance(mask_xy, np.ndarray) else mask_xy
+    for kpts, conf in zip(keypoints_xy, boxes_conf):
+        # kpts shape: [4, 2] for 4 corners
+        # Keypoints are ordered: TL, TR, BR, BL (clockwise from top-left)
 
-        # Fit quadrilateral from contour
-        quad = fit_quad_from_contour(contour)
+        # Validate keypoint ordering (ensure clockwise from top-left)
+        ordered_kpts = order_corners_clockwise(kpts)
 
-        if quad is not None:
-            quads.append(quad)
-            # Handle both tensor and scalar confidence values
-            if hasattr(conf, 'cpu'):
-                confidences.append(float(conf.cpu().item()))
-            else:
-                confidences.append(float(conf))
+        quads.append(ordered_kpts.astype(np.float64))
+        confidences.append(float(conf))
+
+    # Apply Non-Maximum Suppression to remove overlapping detections
+    quads, confidences = apply_nms(quads, confidences, iou_threshold=0.20)
 
     return quads, confidences
 

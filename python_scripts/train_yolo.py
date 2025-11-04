@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
 """
-YOLOv11 Training Script for microPAD Quadrilateral Auto-Detection
+YOLOv11-pose Training Script for microPAD Quadrilateral Corner Detection
 
 QUICK START (VS Code Terminal):
     conda activate microPAD-python-env
     python train_yolo.py
 
 This will start Stage 1 training (default mode) with optimized defaults:
+- Model: YOLOv11m-pose (keypoint detection for 4 corners)
 - Devices: GPUs 0,2 (both A6000s - matches nvidia-smi order)
 - Image size: 960x960 (better detail than 640, faster than 1280)
 - Batch size: 24 (optimized for 960 resolution)
 - Epochs: 150 with early stopping (patience=20)
-- Results: training_runs/yolo11n_synth/
+- Results: training_runs/yolo11m_pose/
 
 TRAINING PIPELINE:
 - Stage 1: Pretraining on synthetic data (current)
@@ -26,9 +27,9 @@ HARDWARE REQUIREMENTS:
 - Storage: 20TB NVMe
 
 PERFORMANCE TARGETS:
-- Mask mAP@50 > 0.85
+- OKS mAP@50 > 0.85
 - Detection rate > 85%
-- Inference < 50ms on Android devices
+- Inference < 100ms per image at 960px
 """
 
 import argparse
@@ -40,9 +41,25 @@ import yaml
 try:
     from ultralytics import YOLO
     from ultralytics import settings as yolo_settings
+    from ultralytics import __version__ as ultralytics_version
 except ImportError:
     print("ERROR: Ultralytics not installed. Run: pip install ultralytics")
     sys.exit(1)
+
+# Verify Ultralytics version supports pose training
+def check_ultralytics_version():
+    """Check that Ultralytics version supports YOLOv11-pose."""
+    required_version = (8, 1, 0)
+    try:
+        version_parts = tuple(int(x) for x in ultralytics_version.split('.')[:3])
+        if version_parts < required_version:
+            print(f"WARNING: Ultralytics version {ultralytics_version} may not fully support YOLOv11-pose.")
+            print(f"         Recommended version: {'.'.join(map(str, required_version))} or higher")
+            print(f"         Update with: pip install --upgrade ultralytics")
+    except Exception:
+        print(f"WARNING: Could not parse Ultralytics version: {ultralytics_version}")
+
+check_ultralytics_version()
 
 
 class YOLOTrainer:
@@ -78,25 +95,25 @@ class YOLOTrainer:
 
     def train_stage1(
         self,
-        model: str = 'yolo11n-seg.pt',
+        model: str = 'yolo11m-pose.pt',
         data: str = 'micropad_synth.yaml',
         epochs: int = 150,
         imgsz: int = 960,
         batch: int = 24,
-        device: str = '0,1',
+        device: str = '0,2',
         patience: int = 20,
-        name: str = 'yolo11n_synth',
+        name: str = 'yolo11m_pose',
         **kwargs
     ) -> Dict[str, Any]:
         """Train Stage 1: Synthetic data pretraining.
 
         Args:
-            model: YOLOv11 pretrained model (yolo11n-seg.pt recommended)
+            model: YOLOv11 pretrained model (yolo11m-pose.pt for keypoint detection)
             data: Dataset config file in configs/ directory
             epochs: Maximum training epochs
             imgsz: Input image size (960 recommended for better detail)
             batch: Batch size (24 optimized for 960 resolution on dual A6000 GPUs)
-            device: GPU device(s) - '0,1' for dual A6000 GPUs, '0' for single
+            device: GPU device(s) - '0,2' for dual A6000 GPUs (devices 0,2), '0' for single
             patience: Early stopping patience
             name: Experiment name
             **kwargs: Additional training arguments passed to YOLO
@@ -336,20 +353,24 @@ class YOLOTrainer:
             if isinstance(metrics[key], (int, float)):
                 print(f"  {key}: {metrics[key]:.4f}")
 
-        # Print key metrics (try common formats)
+        # Print key metrics (try common formats for box and keypoints)
         print(f"\nBox Metrics:")
         box_map50 = metrics.get('metrics/mAP50(B)') or metrics.get('box/mAP50') or 0.0
         box_map50_95 = metrics.get('metrics/mAP50-95(B)') or metrics.get('box/mAP50-95') or 0.0
         print(f"  mAP@50:    {box_map50:.4f}")
         print(f"  mAP@50-95: {box_map50_95:.4f}")
 
-        print(f"\nMask Metrics:")
-        mask_map50 = metrics.get('metrics/mAP50(M)') or metrics.get('mask/mAP50') or 0.0
-        mask_map50_95 = metrics.get('metrics/mAP50-95(M)') or metrics.get('mask/mAP50-95') or 0.0
-        print(f"  mAP@50:    {mask_map50:.4f}")
-        print(f"  mAP@50-95: {mask_map50_95:.4f}")
+        print(f"\nKeypoint Metrics (OKS - Object Keypoint Similarity):")
+        pose_map50 = (metrics.get('metrics/mAP50(P)') or
+                      metrics.get('pose/mAP50') or
+                      metrics.get('keypoints/mAP50') or 0.0)
+        pose_map50_95 = (metrics.get('metrics/mAP50-95(P)') or
+                         metrics.get('pose/mAP50-95') or
+                         metrics.get('keypoints/mAP50-95') or 0.0)
+        print(f"  mAP@50:    {pose_map50:.4f}")
+        print(f"  mAP@50-95: {pose_map50_95:.4f}")
 
-        print(f"\nTarget: Mask mAP@50 > 0.85")
+        print(f"\nTarget: OKS mAP@50 > 0.85")
         print("\nNOTE: If metrics show 0.0, check 'Available metric keys' above")
         print("      and update code with correct key names.")
 
@@ -446,16 +467,16 @@ Examples:
   python train_yolo.py --stage 1  # Explicit stage 1
 
   # Train Stage 2 (fine-tuning with manual labels)
-  python train_yolo.py --stage 2 --weights models/yolo11n_micropad_seg.pt
+  python train_yolo.py --stage 2 --weights models/yolo11m_micropad_pose.pt
 
   # Validate model
-  python train_yolo.py --validate --weights models/yolo11n_micropad_seg.pt
+  python train_yolo.py --validate --weights models/yolo11m_micropad_pose.pt
 
   # Export to TFLite for Android (when Phase 5 begins)
-  python train_yolo.py --export --weights models/yolo11n_micropad_seg.pt
+  python train_yolo.py --export --weights models/yolo11m_micropad_pose.pt
 
   # Export with INT8 quantization for Android
-  python train_yolo.py --export --weights models/yolo11n_micropad_seg.pt --formats tflite --int8
+  python train_yolo.py --export --weights models/yolo11m_micropad_pose.pt --formats tflite --int8
 
   # Custom training parameters
   python train_yolo.py --stage 1 --epochs 200 --batch 96 --device 0

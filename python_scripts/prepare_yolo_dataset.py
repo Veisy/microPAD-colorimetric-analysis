@@ -8,22 +8,31 @@ This script restructures the augmented dataset for YOLO training:
 4. Creates train.txt and val.txt with absolute paths
 
 MATLAB scripts (augment_dataset.m) generate images and polygon coordinates.
-This Python script converts coordinates to YOLO format and restructures directories.
+This Python script converts coordinates to YOLO pose keypoint format and restructures directories.
+
+Label Format (YOLOv11-pose - DEFAULT):
+    class_id x1 y1 v1 x2 y2 v2 x3 y3 v3 x4 y4 v4
+    - Vertices ordered clockwise from top-left (TL, TR, BR, BL)
+    - Visibility flags: 2 = visible (all corners always visible in our dataset)
+    - Default format is 'pose' for keypoint detection
 
 Configuration:
     - Train phones: iphone_11, iphone_15, realme_c55
     - Val phone: samsung_a75
 
 Usage:
-    python prepare_yolo_dataset.py
+    python prepare_yolo_dataset.py [--format pose|seg]
+    Default: python prepare_yolo_dataset.py  # Uses pose format
 """
 
 import os
 import shutil
+import argparse
 from pathlib import Path
 from typing import List, Tuple
 import yaml
 import cv2
+import numpy as np
 
 # Configuration
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -78,6 +87,68 @@ def restructure_for_yolo() -> int:
     return total_moved
 
 
+def validate_clockwise_order(vertices: np.ndarray) -> bool:
+    """Validate that vertices are ordered clockwise using signed area test.
+
+    In image coordinates (Y-axis points down), "visually clockwise" ordering
+    (TL→TR→BR→BL) produces positive signed area.
+
+    Args:
+        vertices: 4x2 numpy array of vertices
+
+    Returns:
+        True if clockwise in image coordinates, False otherwise
+    """
+    # Calculate signed area using shoelace formula
+    n = len(vertices)
+    area = 0.0
+    for i in range(n):
+        j = (i + 1) % n
+        area += vertices[i, 0] * vertices[j, 1]
+        area -= vertices[j, 0] * vertices[i, 1]
+
+    # In image coordinates (Y down), clockwise has positive signed area
+    return area > 0
+
+
+def order_keypoints_clockwise(vertices: np.ndarray) -> np.ndarray:
+    """Order vertices clockwise starting from top-left.
+
+    Top-left is defined as the vertex with minimum (x + y).
+    Uses centroid-based angle sorting to establish clockwise order.
+
+    Args:
+        vertices: 4x2 numpy array of vertices (any order)
+
+    Returns:
+        4x2 numpy array ordered clockwise from top-left (TL, TR, BR, BL)
+    """
+    # Find centroid
+    centroid = vertices.mean(axis=0)
+
+    # Calculate angles from centroid to each vertex
+    angles = np.arctan2(vertices[:, 1] - centroid[1],
+                        vertices[:, 0] - centroid[0])
+
+    # Sort vertices by angle (counter-clockwise from positive x-axis)
+    sorted_indices = np.argsort(angles)
+    sorted_vertices = vertices[sorted_indices]
+
+    # Check if ordering is clockwise or counter-clockwise
+    if not validate_clockwise_order(sorted_vertices):
+        # Reverse to make clockwise (keep first vertex as anchor)
+        sorted_vertices = sorted_vertices[::-1]
+
+    # Find top-left vertex (minimum x + y)
+    sum_coords = sorted_vertices[:, 0] + sorted_vertices[:, 1]
+    top_left_idx = np.argmin(sum_coords)
+
+    # Rotate array to start from top-left
+    ordered_vertices = np.roll(sorted_vertices, -top_left_idx, axis=0)
+
+    return ordered_vertices
+
+
 def collect_image_paths(phone_dir: str, use_absolute_paths: bool = True) -> List[str]:
     """Collect all image paths from a phone directory.
 
@@ -112,13 +183,20 @@ def collect_image_paths(phone_dir: str, use_absolute_paths: bool = True) -> List
     return sorted(images)
 
 
-def generate_yolo_labels() -> Tuple[int, int]:
-    """Generate YOLO segmentation labels from MATLAB coordinates.
+def generate_yolo_labels(label_format: str = 'pose') -> Tuple[int, int]:
+    """Generate YOLO labels from MATLAB coordinates.
 
     Reads polygon coordinates from augmented_2_micropads/[phone]/coordinates.txt
-    and creates YOLOv11 segmentation labels in augmented_1_dataset/[phone]/labels/.
+    and creates YOLOv11 labels in augmented_1_dataset/[phone]/labels/.
 
-    Format: class_id x1 y1 x2 y2 x3 y3 x4 y4 (normalized [0,1])
+    Label formats:
+        - 'pose': class_id x1 y1 2 x2 y2 2 x3 y3 2 x4 y4 2 (keypoint format, default)
+        - 'seg': class_id x1 y1 x2 y2 x3 y3 x4 y4 (segmentation format, deprecated)
+
+    Vertices are automatically ordered clockwise from top-left (TL, TR, BR, BL).
+
+    Args:
+        label_format: Label format to generate ('pose' or 'seg')
 
     Returns:
         Tuple of (total_labels_created, total_polygons_processed)
@@ -210,11 +288,32 @@ def generate_yolo_labels() -> Tuple[int, int]:
             label_path = labels_dir / f"{base_name}.txt"
             with open(label_path, 'w') as f:
                 for polygon in valid_polygons:
+                    # Convert to numpy array for ordering
+                    vertices = np.array(polygon, dtype=np.float64)
+
+                    # Order vertices clockwise from top-left
+                    ordered_vertices = order_keypoints_clockwise(vertices)
+
                     # Normalize coordinates to [0, 1]
-                    norm_poly = [(x / width, y / height) for x, y in polygon]
-                    # Write: 0 x1 y1 x2 y2 x3 y3 x4 y4
-                    coords_str = ' '.join([f"{x:.6f} {y:.6f}" for x, y in norm_poly])
-                    f.write(f"0 {coords_str}\n")
+                    norm_vertices = ordered_vertices.copy()
+                    norm_vertices[:, 0] /= width
+                    norm_vertices[:, 1] /= height
+
+                    # Verify ordering is correct
+                    if not validate_clockwise_order(ordered_vertices):
+                        print(f"⚠️  Warning: failed to establish clockwise ordering for polygon in {base_name}")
+                        continue
+
+                    # Write label based on format
+                    if label_format == 'pose':
+                        # Pose format: 0 x1 y1 2 x2 y2 2 x3 y3 2 x4 y4 2
+                        coords_str = ' '.join([f"{x:.6f} {y:.6f} 2" for x, y in norm_vertices])
+                        f.write(f"0 {coords_str}\n")
+                    else:
+                        # Segmentation format: 0 x1 y1 x2 y2 x3 y3 x4 y4
+                        coords_str = ' '.join([f"{x:.6f} {y:.6f}" for x, y in norm_vertices])
+                        f.write(f"0 {coords_str}\n")
+
                     total_polygons += 1
 
             total_labels += 1
@@ -330,6 +429,21 @@ def verify_labels() -> bool:
         return True
 
 
+def parse_args():
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(
+        description="Prepare YOLO dataset for microPAD detection training"
+    )
+    parser.add_argument(
+        "--format",
+        type=str,
+        choices=['pose', 'seg'],
+        default='pose',
+        help="Label format: 'pose' for YOLOv11-pose (default), 'seg' for segmentation (deprecated)"
+    )
+    return parser.parse_args()
+
+
 def main() -> None:
     """Main execution.
 
@@ -337,9 +451,15 @@ def main() -> None:
         FileNotFoundError: If dataset or phone directories not found
         ValueError: If no images found in directories
     """
+    args = parse_args()
+
     print("="*60)
     print("microPAD YOLO Dataset Preparation")
     print("="*60)
+    print(f"Label format: {args.format.upper()}")
+    if args.format == 'seg':
+        print("⚠️  Warning: Segmentation format is deprecated. Pose format recommended.")
+    print()
 
     if not AUGMENTED_DATASET.exists():
         raise FileNotFoundError(f"Dataset not found at {AUGMENTED_DATASET}")
@@ -369,7 +489,7 @@ def main() -> None:
 
     # Generate YOLO labels from MATLAB coordinates
     print("Generating YOLO labels from MATLAB coordinates...")
-    label_count, polygon_count = generate_yolo_labels()
+    label_count, polygon_count = generate_yolo_labels(label_format=args.format)
     print()
 
     verify_labels()
