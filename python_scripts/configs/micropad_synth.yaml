@@ -9,4 +9,23 @@ names:
 - concentration_zone
 kpt_shape:
 - 4
+- 3
+flip_idx:
+- 1
+- 0
+- 3
 - 2
+kpt_names:
+- TL
+- TR
+- BR
+- BL
+skeleton:
+- - 0
+  - 1
+- - 1
+  - 2
+- - 2
+  - 3
+- - 3
+  - 0

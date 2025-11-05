@@ -11,8 +11,9 @@ MATLAB scripts (augment_dataset.m) generate images and polygon coordinates.
 This Python script converts coordinates to YOLO pose keypoint format and restructures directories.
 
 Label Format (YOLOv11-pose - DEFAULT):
-    class_id x1 y1 v1 x2 y2 v2 x3 y3 v3 x4 y4 v4
-    - Vertices ordered clockwise from top-left (TL, TR, BR, BL)
+    class_id x_center y_center width height x1 y1 v1 x2 y2 v2 x3 y3 v3 x4 y4 v4
+    - Bounding box: axis-aligned bbox around keypoints (normalized [0,1])
+    - Keypoints: 4 corners ordered clockwise from top-left (TL, TR, BR, BL)
     - Visibility flags: 2 = visible (all corners always visible in our dataset)
     - Default format is 'pose' for keypoint detection
 
@@ -306,9 +307,21 @@ def generate_yolo_labels(label_format: str = 'pose') -> Tuple[int, int]:
 
                     # Write label based on format
                     if label_format == 'pose':
-                        # Pose format: 0 x1 y1 2 x2 y2 2 x3 y3 2 x4 y4 2
-                        coords_str = ' '.join([f"{x:.6f} {y:.6f} 2" for x, y in norm_vertices])
-                        f.write(f"0 {coords_str}\n")
+                        # Calculate bounding box from keypoints (axis-aligned)
+                        x_coords = norm_vertices[:, 0]
+                        y_coords = norm_vertices[:, 1]
+                        x_min, x_max = x_coords.min(), x_coords.max()
+                        y_min, y_max = y_coords.min(), y_coords.max()
+
+                        # Bounding box center and size (normalized)
+                        x_center = (x_min + x_max) / 2
+                        y_center = (y_min + y_max) / 2
+                        bbox_width = x_max - x_min
+                        bbox_height = y_max - y_min
+
+                        # Pose format: 0 x_center y_center width height x1 y1 2 x2 y2 2 x3 y3 2 x4 y4 2
+                        keypoints_str = ' '.join([f"{x:.6f} {y:.6f} 2" for x, y in norm_vertices])
+                        f.write(f"0 {x_center:.6f} {y_center:.6f} {bbox_width:.6f} {bbox_height:.6f} {keypoints_str}\n")
                     else:
                         # Segmentation format: 0 x1 y1 x2 y2 x3 y3 x4 y4
                         coords_str = ' '.join([f"{x:.6f} {y:.6f}" for x, y in norm_vertices])
@@ -360,7 +373,7 @@ def create_yolo_config(config_name: str, description: str) -> Path:
         'val': 'val.txt',
         'nc': 1,
         'names': ['concentration_zone'],
-        'kpt_shape': [4, 2]  # 4 keypoints (TL, TR, BR, BL), 2 dimensions each (x, y)
+        'kpt_shape': [4, 3]  # 4 keypoints (TL, TR, BR, BL), 3 values each (x, y, visibility)
     }
 
     config_path = CONFIGS_DIR / f"{config_name}.yaml"
