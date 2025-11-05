@@ -49,7 +49,7 @@ DEFAULT_MODEL = 'yolo11m-pose.pt'
 DEFAULT_IMAGE_SIZE = 960
 
 # Training hyperparameters (optimized for dual A6000 workstation)
-DEFAULT_BATCH_SIZE = 64              # 32 per GPU on dual A6000 setup
+DEFAULT_BATCH_SIZE = 32              # 16 per GPU on dual A6000 setup
 DEFAULT_EPOCHS_STAGE1 = 150          # Sufficient for convergence on synthetic data
 DEFAULT_EPOCHS_STAGE2 = 80           # Fine-tuning with early stopping
 DEFAULT_PATIENCE_STAGE1 = 20         # Early stopping patience
