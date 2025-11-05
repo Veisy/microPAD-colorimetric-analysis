@@ -2130,8 +2130,10 @@ function [polygons, order] = assignPolygonLabels(polygons)
 end
 
 function sortedPolygons = sortPolygonArrayByX(polygons)
-    % Sort numeric polygon array by centroid: left→right, bottom→top in UI window
-    % con_0 (blue) at BOTTOM (large Y), con_max (red) at TOP (small Y)
+    % Determine polygon ordering based on dominant axis coverage.
+    % Primary ordering follows the axis with the greater spread-to-size ratio:
+    %   - Horizontal layouts: left-to-right (primary), bottom-to-top (secondary)
+    %   - Vertical layouts: bottom-to-top (primary), left-to-right (secondary)
     sortedPolygons = polygons;
     if isempty(polygons)
         return;
@@ -2141,26 +2143,84 @@ function sortedPolygons = sortPolygonArrayByX(polygons)
     end
 
     numPolygons = size(polygons, 1);
-    centroids = zeros(numPolygons, 2);
-
     if numPolygons == 0
-        sortedPolygons = polygons;
         return;
     end
+
+    centroids = nan(numPolygons, 2);
+    minXs = nan(numPolygons, 1);
+    maxXs = nan(numPolygons, 1);
+    minYs = nan(numPolygons, 1);
+    maxYs = nan(numPolygons, 1);
 
     for i = 1:numPolygons
         poly = squeeze(polygons(i, :, :));
         if isempty(poly)
-            centroids(i, :) = inf;
-        else
-            centroids(i, 1) = mean(poly(:, 1));
-            centroids(i, 2) = mean(poly(:, 2));
+            continue;
         end
+
+        xs = poly(:, 1);
+        ys = poly(:, 2);
+
+        centroids(i, 1) = mean(xs);
+        centroids(i, 2) = mean(ys);
+
+        minXs(i) = min(xs);
+        maxXs(i) = max(xs);
+        minYs(i) = min(ys);
+        maxYs(i) = max(ys);
     end
 
-    % Sort by Y DESCENDING (bottom→top, primary), then X ascending (left→right, secondary)
-    % This puts bottom row first (large Y), sorted left-to-right
-    sortKey = [-centroids(:, 2), centroids(:, 1)];
+    validMask = all(isfinite(centroids), 2);
+    if ~any(validMask)
+        return;
+    end
+
+    widths = maxXs(validMask) - minXs(validMask);
+    heights = maxYs(validMask) - minYs(validMask);
+
+    validWidths = widths(widths > 0);
+    if isempty(validWidths)
+        widthRef = 1;
+    else
+        widthRef = median(validWidths);
+    end
+
+    validHeights = heights(heights > 0);
+    if isempty(validHeights)
+        heightRef = 1;
+    else
+        heightRef = median(validHeights);
+    end
+
+    rangeX = max(maxXs(validMask)) - min(minXs(validMask));
+    rangeY = max(maxYs(validMask)) - min(minYs(validMask));
+
+    widthDen = max(widthRef, 1e-6);
+    heightDen = max(heightRef, 1e-6);
+
+    countX = rangeX / widthDen;
+    countY = rangeY / heightDen;
+
+    if ~isfinite(countX)
+        countX = 0;
+    end
+    if ~isfinite(countY)
+        countY = 0;
+    end
+
+    sortKey = inf(numPolygons, 2);
+
+    if countX >= countY
+        % Horizontal dominance: prioritize left→right, then bottom→top
+        sortKey(validMask, 1) = centroids(validMask, 1);
+        sortKey(validMask, 2) = -centroids(validMask, 2);
+    else
+        % Vertical dominance: prioritize bottom→top, then left→right
+        sortKey(validMask, 1) = -centroids(validMask, 2);
+        sortKey(validMask, 2) = centroids(validMask, 1);
+    end
+
     [~, order] = sortrows(sortKey);
     sortedPolygons = polygons(order, :, :);
 end
