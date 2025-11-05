@@ -16,9 +16,39 @@ augmented_*/
 # Training runs (large model artifacts and checkpoints)
 training_runs/
 
-# YOLO pretrained base models (downloadable from Ultralytics)
-yolo11n.pt
-yolo11n-seg.pt
+# Model files (exclude all model formats globally, except models/ directory)
+# PyTorch models and checkpoints
+*.pt
+*.pth
+*.ckpt
+# Model weights
+*.weights
+# Keras/TensorFlow models
+*.h5
+*.hdf5
+*.pb
+# Mobile/Edge deployment formats
+*.tflite
+*.onnx
+*.mlmodel
+*.engine
+*.plan
+*.torchscript
+
+# Exception: Allow model files only in models/ directory
+!models/*.pt
+!models/*.pth
+!models/*.ckpt
+!models/*.weights
+!models/*.h5
+!models/*.hdf5
+!models/*.pb
+!models/*.tflite
+!models/*.onnx
+!models/*.mlmodel
+!models/*.engine
+!models/*.plan
+!models/*.torchscript
 
 # Claude Code settings
 .claude/settings.local.json
