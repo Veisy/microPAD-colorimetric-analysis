@@ -2,34 +2,19 @@
 """
 YOLOv11-pose Training Script for microPAD Quadrilateral Corner Detection
 
-QUICK START (VS Code Terminal):
-    conda activate microPAD-python-env
+QUICK START:
     python train_yolo.py
 
-This will start Stage 1 training (default mode) with optimized defaults:
-- Model: YOLOv11m-pose (keypoint detection for 4 corners)
-- Devices: GPUs 0,2 (both A6000s - matches nvidia-smi order)
-- Image size: 960x960 (better detail than 640, faster than 1280)
-- Batch size: 24 (optimized for 960 resolution)
-- Epochs: 150 with early stopping (patience=20)
-- Results: training_runs/yolo11m_pose/
-
 TRAINING PIPELINE:
-- Stage 1: Pretraining on synthetic data (current)
+- Stage 1: Pretraining on synthetic data
 - Stage 2: Fine-tuning on mixed synthetic + manual labels (future)
 
-Also provides validation capabilities. Export to TFLite is done on-demand for Android deployment.
-
-HARDWARE REQUIREMENTS:
-- GPUs: Dual RTX A6000 (48GB each, CUDA devices 0,2 - matches nvidia-smi)
-- RAM: 256GB
-- CPUs: 64 cores / 128 threads
-- Storage: 20TB NVMe
+Also provides validation and export capabilities for deployment.
 
 PERFORMANCE TARGETS:
 - OKS mAP@50 > 0.85
 - Detection rate > 85%
-- Inference < 100ms per image at 960px
+- Inference < 100ms per image
 """
 
 import argparse
@@ -45,6 +30,46 @@ try:
 except ImportError:
     print("ERROR: Ultralytics not installed. Run: pip install ultralytics")
     sys.exit(1)
+
+# ============================================================================
+# TRAINING CONFIGURATION CONSTANTS
+# ============================================================================
+
+# Model configuration
+DEFAULT_MODEL = 'yolo11m-pose.pt'
+DEFAULT_IMAGE_SIZE = 960
+
+# Training hyperparameters
+DEFAULT_BATCH_SIZE = 64
+DEFAULT_EPOCHS_STAGE1 = 150
+DEFAULT_EPOCHS_STAGE2 = 80
+DEFAULT_PATIENCE_STAGE1 = 20
+DEFAULT_PATIENCE_STAGE2 = 15
+DEFAULT_LEARNING_RATE_STAGE2 = 0.01
+
+# Hardware configuration
+DEFAULT_GPU_DEVICES = '0,2'
+DEFAULT_NUM_WORKERS = 32
+DEFAULT_CACHE_ENABLED = True
+
+# Checkpoint configuration
+CHECKPOINT_SAVE_PERIOD = 10
+
+# Augmentation configuration
+AUG_HSV_HUE = 0.015
+AUG_HSV_SATURATION = 0.7
+AUG_HSV_VALUE = 0.4
+AUG_TRANSLATE = 0.1
+AUG_SCALE = 0.5
+AUG_FLIP_LR = 0.5
+AUG_MOSAIC = 1.0
+AUG_ROTATION = 0.0  # Disabled (already in synthetic data)
+
+# Dataset configuration
+DEFAULT_STAGE1_DATA = 'micropad_synth.yaml'
+DEFAULT_STAGE2_DATA = 'micropad_mixed.yaml'
+
+# ============================================================================
 
 # Verify Ultralytics version supports pose training
 def check_ultralytics_version():
@@ -95,26 +120,30 @@ class YOLOTrainer:
 
     def train_stage1(
         self,
-        model: str = 'yolo11m-pose.pt',
-        data: str = 'micropad_synth.yaml',
-        epochs: int = 150,
-        imgsz: int = 960,
-        batch: int = 24,
-        device: str = '0,2',
-        patience: int = 20,
+        model: str = DEFAULT_MODEL,
+        data: str = DEFAULT_STAGE1_DATA,
+        epochs: int = DEFAULT_EPOCHS_STAGE1,
+        imgsz: int = DEFAULT_IMAGE_SIZE,
+        batch: int = DEFAULT_BATCH_SIZE,
+        device: str = DEFAULT_GPU_DEVICES,
+        patience: int = DEFAULT_PATIENCE_STAGE1,
+        workers: int = DEFAULT_NUM_WORKERS,
+        cache: bool = DEFAULT_CACHE_ENABLED,
         name: str = 'yolo11m_pose',
         **kwargs
     ) -> Dict[str, Any]:
         """Train Stage 1: Synthetic data pretraining.
 
         Args:
-            model: YOLOv11 pretrained model (yolo11m-pose.pt for keypoint detection)
+            model: YOLOv11 pretrained model for keypoint detection
             data: Dataset config file in configs/ directory
             epochs: Maximum training epochs
-            imgsz: Input image size (960 recommended for better detail)
-            batch: Batch size (24 optimized for 960 resolution on dual A6000 GPUs)
-            device: GPU device(s) - '0,2' for dual A6000 GPUs (devices 0,2), '0' for single
+            imgsz: Input image size
+            batch: Batch size (total across all GPUs)
+            device: GPU device(s) (e.g., '0' for single GPU, '0,1' for multi-GPU)
             patience: Early stopping patience
+            workers: Number of dataloader workers
+            cache: Cache images in RAM/disk for faster training
             name: Experiment name
             **kwargs: Additional training arguments passed to YOLO
 
@@ -133,12 +162,17 @@ class YOLOTrainer:
                 f"Run prepare_yolo_dataset.py first to generate config."
             )
 
+        num_devices = len(device.split(',')) if ',' in device else 1
+        batch_per_device = batch // num_devices if num_devices > 1 else batch
+
         print(f"\nConfiguration:")
         print(f"  Model: {model}")
         print(f"  Data: {data_path}")
         print(f"  Epochs: {epochs}")
         print(f"  Image size: {imgsz}")
-        print(f"  Batch size: {batch}")
+        print(f"  Batch size: {batch}" + (f" ({batch_per_device} per GPU)" if num_devices > 1 else ""))
+        print(f"  Workers: {workers}")
+        print(f"  Cache: {cache}")
         print(f"  Device(s): {device}")
         print(f"  Patience: {patience}")
         print(f"  Project: {self.results_dir}")
@@ -155,22 +189,24 @@ class YOLOTrainer:
             'imgsz': imgsz,
             'batch': batch,
             'device': device,
+            'workers': workers,
+            'cache': cache,
             'project': str(self.results_dir),
             'name': name,
             'patience': patience,
             'save': True,
-            'save_period': 10,  # Save checkpoint every 10 epochs
+            'save_period': CHECKPOINT_SAVE_PERIOD,
             'verbose': True,
             'plots': True,
-            # Augmentation (no rotation - already in synthetic data)
-            'hsv_h': 0.015,      # HSV hue augmentation
-            'hsv_s': 0.7,        # HSV saturation augmentation
-            'hsv_v': 0.4,        # HSV value augmentation
-            'translate': 0.1,    # Translation augmentation
-            'scale': 0.5,        # Scale augmentation
-            'fliplr': 0.5,       # Horizontal flip probability
-            'mosaic': 1.0,       # Mosaic augmentation probability
-            'degrees': 0.0,      # No rotation (already in synthetic)
+            # Augmentation configuration
+            'hsv_h': AUG_HSV_HUE,
+            'hsv_s': AUG_HSV_SATURATION,
+            'hsv_v': AUG_HSV_VALUE,
+            'translate': AUG_TRANSLATE,
+            'scale': AUG_SCALE,
+            'fliplr': AUG_FLIP_LR,
+            'mosaic': AUG_MOSAIC,
+            'degrees': AUG_ROTATION,
         }
 
         # Merge additional kwargs
@@ -194,13 +230,15 @@ class YOLOTrainer:
     def train_stage2(
         self,
         weights: str,
-        data: str = 'micropad_mixed.yaml',
-        epochs: int = 80,
-        imgsz: int = 960,
-        batch: int = 24,
-        device: str = '0,1',
-        patience: int = 15,
-        lr0: float = 0.01,
+        data: str = DEFAULT_STAGE2_DATA,
+        epochs: int = DEFAULT_EPOCHS_STAGE2,
+        imgsz: int = DEFAULT_IMAGE_SIZE,
+        batch: int = DEFAULT_BATCH_SIZE,
+        device: str = DEFAULT_GPU_DEVICES,
+        patience: int = DEFAULT_PATIENCE_STAGE2,
+        workers: int = DEFAULT_NUM_WORKERS,
+        cache: bool = DEFAULT_CACHE_ENABLED,
+        lr0: float = DEFAULT_LEARNING_RATE_STAGE2,
         name: str = 'yolo11n_mixed',
         **kwargs
     ) -> Dict[str, Any]:
@@ -209,12 +247,14 @@ class YOLOTrainer:
         Args:
             weights: Path to pretrained weights from Stage 1
             data: Mixed dataset config (synthetic + manual labels)
-            epochs: Maximum fine-tuning epochs (less than Stage 1)
+            epochs: Maximum fine-tuning epochs
             imgsz: Input image size
-            batch: Batch size (smaller for fine-tuning)
+            batch: Batch size (total across all GPUs)
             device: GPU device(s)
             patience: Early stopping patience
-            lr0: Initial learning rate (lower for fine-tuning)
+            workers: Number of dataloader workers
+            cache: Cache images in RAM/disk
+            lr0: Initial learning rate for fine-tuning
             name: Experiment name
             **kwargs: Additional training arguments
 
@@ -262,12 +302,14 @@ class YOLOTrainer:
             'imgsz': imgsz,
             'batch': batch,
             'device': device,
+            'workers': workers,
+            'cache': cache,
             'project': str(self.results_dir),
             'name': name,
             'patience': patience,
             'lr0': lr0,
             'save': True,
-            'save_period': 10,
+            'save_period': CHECKPOINT_SAVE_PERIOD,
             'verbose': True,
             'plots': True,
         }
@@ -289,8 +331,8 @@ class YOLOTrainer:
         self,
         weights: str,
         data: Optional[str] = None,
-        imgsz: int = 960,
-        batch: int = 24,
+        imgsz: int = DEFAULT_IMAGE_SIZE,
+        batch: int = DEFAULT_BATCH_SIZE,
         device: str = '0',
         **kwargs
     ) -> Dict[str, Any]:
@@ -380,18 +422,16 @@ class YOLOTrainer:
         self,
         weights: str,
         formats: list = ['tflite'],
-        imgsz: int = 960,
+        imgsz: int = DEFAULT_IMAGE_SIZE,
         half: bool = True,
         int8: bool = False,
         **kwargs
     ) -> Dict[str, Path]:
         """Export model for deployment.
 
-        NOTE: ONNX export removed - MATLAB uses PyTorch model directly via Python interface.
-
         Args:
             weights: Path to model weights
-            formats: Export formats ('tflite' for Android)
+            formats: Export formats (e.g., 'tflite' for mobile deployment)
             imgsz: Input image size
             half: Use FP16 precision (TFLite only)
             int8: Use INT8 quantization (TFLite only, requires calibration)
@@ -472,14 +512,14 @@ Examples:
   # Validate model
   python train_yolo.py --validate --weights models/yolo11m_micropad_pose.pt
 
-  # Export to TFLite for Android (when Phase 5 begins)
+  # Export to TFLite for mobile deployment
   python train_yolo.py --export --weights models/yolo11m_micropad_pose.pt
 
-  # Export with INT8 quantization for Android
+  # Export with INT8 quantization
   python train_yolo.py --export --weights models/yolo11m_micropad_pose.pt --formats tflite --int8
 
   # Custom training parameters
-  python train_yolo.py --stage 1 --epochs 200 --batch 96 --device 0
+  python train_yolo.py --stage 1 --epochs 200 --batch 128
         """
     )
 
@@ -495,20 +535,20 @@ Examples:
     # Common arguments
     parser.add_argument('--weights', type=str,
                        help='Path to model weights (required for stage 2, validate, export)')
-    parser.add_argument('--device', type=str, default='0,2',
-                       help='GPU device(s) (default: 0,2 for both A6000 GPUs - matches nvidia-smi order)')
-    parser.add_argument('--imgsz', type=int, default=960,
-                       help='Input image size (default: 960)')
+    parser.add_argument('--device', type=str, default=DEFAULT_GPU_DEVICES,
+                       help=f'GPU device(s) (default: {DEFAULT_GPU_DEVICES})')
+    parser.add_argument('--imgsz', type=int, default=DEFAULT_IMAGE_SIZE,
+                       help=f'Input image size (default: {DEFAULT_IMAGE_SIZE})')
 
     # Training arguments
     parser.add_argument('--epochs', type=int,
-                       help='Training epochs (default: 150 for stage 1, 80 for stage 2)')
+                       help=f'Training epochs (default: {DEFAULT_EPOCHS_STAGE1} for stage 1, {DEFAULT_EPOCHS_STAGE2} for stage 2)')
     parser.add_argument('--batch', type=int,
-                       help='Batch size (default: 24 for both stages, optimized for 960 resolution on dual A6000 GPUs)')
+                       help=f'Batch size (default: {DEFAULT_BATCH_SIZE}, distributed across GPUs)')
     parser.add_argument('--patience', type=int,
-                       help='Early stopping patience (default: 20 for stage 1, 15 for stage 2)')
+                       help=f'Early stopping patience (default: {DEFAULT_PATIENCE_STAGE1} for stage 1, {DEFAULT_PATIENCE_STAGE2} for stage 2)')
     parser.add_argument('--lr0', type=float,
-                       help='Initial learning rate (default: 0.01 for stage 2)')
+                       help=f'Initial learning rate (default: {DEFAULT_LEARNING_RATE_STAGE2} for stage 2)')
 
     # Export arguments
     parser.add_argument('--formats', nargs='+', default=['tflite'],
