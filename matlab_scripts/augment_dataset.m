@@ -98,7 +98,12 @@ function augment_dataset(varargin)
         'poolRefreshInterval', 25, ...  % images before texture refresh
         'poolShiftPixels', 48, ...  % pixels
         'poolScaleRange', [0.9, 1.1], ...
-        'poolFlipProbability', 0.15);
+        'poolFlipProbability', 0.15, ...
+        'laminateNoiseStrength', 5, ...
+        'skinLowFreqStrength', 6, ...
+        'skinMidFreqStrength', 2, ...
+        'skinHighFreqStrength', 1, ...
+        'poolMaxMemoryMB', 512);
 
     % Artifact generation parameters
     ARTIFACTS = struct( ...
@@ -410,7 +415,7 @@ function augment_phone(phoneName, cfg)
 end
 
 %% -------------------------------------------------------------------------
-function emit_passthrough_sample(paperBase, imgPath, stage1Img, polygons, ellipseMap, ...
+function emit_passthrough_sample(paperBase, ~, stage1Img, polygons, ellipseMap, ...
                                  hasEllipses, stage1PhoneOut, stage2PhoneOut, ...
                                  stage3PhoneOut, cfg)
     % Generate aug_000 assets by reusing original captures without augmentation
@@ -503,7 +508,7 @@ function emit_passthrough_sample(paperBase, imgPath, stage1Img, polygons, ellips
 
                 s3Count = s3Count + 1;
                 if s3Count > numel(stage3Coords)
-                    stage3Coords{s3Count * 2} = [];
+                    stage3Coords = [stage3Coords; cell(s3Count, 1)];
                 end
                 stage3Coords{s3Count} = struct( ...
                     'image', polygonFileName, ...
@@ -566,7 +571,9 @@ function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap
     % Stage 3: multiple entries per polygon (ellipses)
     maxPolygons = numel(polygons);
     stage2Coords = cell(maxPolygons, 1);
-    stage3Coords = cell(maxPolygons * 10, 1);  % generous estimate
+    % Pre-allocate based on expected ellipses per polygon (3 ellipses × 2 safety factor)
+    avgEllipsesPerPolygon = 3;
+    stage3Coords = cell(maxPolygons * avgEllipsesPerPolygon * 2, 1);
     s2Count = 0;
     s3Count = 0;
 
@@ -836,7 +843,7 @@ function augment_single_paper(paperBase, imgExt, stage1Img, polygons, ellipseMap
                 % Record stage 3 coordinates (ellipse in polygon-crop space)
                 s3Count = s3Count + 1;
                 if s3Count > numel(stage3Coords)
-                    stage3Coords{s3Count * 2} = [];
+                    stage3Coords = [stage3Coords; cell(s3Count, 1)];
                 end
                 stage3Coords{s3Count} = struct( ...
                     'image', polygonFileName, ...
@@ -1286,22 +1293,19 @@ function baseColor = sample_distractor_color(textureCfg, numChannels)
     end
 end
 
-function jittered = jitter_polygon_patch(patch, distractorCfg, mask)
+function jittered = jitter_polygon_patch(patch, distractorCfg)
     % Apply lightweight photometric jitter while preserving mask boundaries.
     %
     % Inputs:
     %   patch - RGB image (uint8)
     %   distractorCfg - Configuration struct
-    %   mask - (optional) Binary mask, defaults to any(patch > 0, 3)
 
     if isempty(patch)
         jittered = patch;
         return;
     end
 
-    if nargin < 3 || isempty(mask)
-        mask = any(patch > 0, 3);
-    end
+    mask = any(patch > 0, 3);
     if ~any(mask(:))
         jittered = patch;
         return;
@@ -1519,8 +1523,8 @@ end
 
 function bg = generate_realistic_lab_surface(width, height, textureCfg, artifactCfg)
     % Generate realistic lab surface backgrounds with pooled single-precision textures
-    width = max(1, round(double(width)));
-    height = max(1, round(double(height)));
+    width = max(1, round(width));
+    height = max(1, round(height));
 
     surfaceType = randi(4);
     texture = borrow_background_texture(surfaceType, width, height, textureCfg);
@@ -1610,7 +1614,7 @@ function poolState = initialize_background_texture_pool(width, height, textureCf
     requestedPoolSize = max(1, round(textureCfg.poolSize));
     bytesPerTexture = max(1, double(width) * double(height) * 4);
     surfaces = 4;
-    maxPoolBytes = 512 * 1024 * 1024;  % cap pooled resident memory to ~512MB
+    maxPoolBytes = textureCfg.poolMaxMemoryMB * 1024 * 1024;
     maxPerSurface = max(1, floor((maxPoolBytes / surfaces) / bytesPerTexture));
     poolSize = min(requestedPoolSize, maxPerSurface);
     refreshInterval = max(1, round(textureCfg.poolRefreshInterval));
@@ -1673,9 +1677,9 @@ function texture = generate_surface_texture_base(surfaceType, width, height, tex
 
             texture = randBuffer1 + randBuffer2;
         case 3  % Laminate grain
-            texture = generate_laminate_texture(width, height);
+            texture = generate_laminate_texture(width, height, textureCfg);
         case 4  % Skin-like microtexture
-            texture = generate_skin_texture(width, height);
+            texture = generate_skin_texture(width, height, textureCfg);
         otherwise
             randBuffer1(:) = single(randn(height, width));
             texture = randBuffer1;
@@ -1710,28 +1714,24 @@ function texture = apply_texture_pool_jitter(baseTexture, poolState)
     end
 end
 
-function texture = generate_laminate_texture(width, height)
+function texture = generate_laminate_texture(width, height, textureCfg)
     % Generate high-contrast laminate surface with subtle noise (single precision).
-    NOISE_STRENGTH = 5;  % Noise amplitude
 
-    width = max(1, round(double(width)));
-    height = max(1, round(double(height)));
+    width = max(1, round(width));
+    height = max(1, round(height));
 
-    texture = single(randn(height, width)) .* single(NOISE_STRENGTH);
+    texture = single(randn(height, width)) .* single(textureCfg.laminateNoiseStrength);
 end
 
-function texture = generate_skin_texture(width, height)
+function texture = generate_skin_texture(width, height, textureCfg)
     % Generate subtle skin-like microtexture (single precision).
-    LOW_FREQ_STRENGTH = 6;   % Low-frequency component amplitude
-    MID_FREQ_STRENGTH = 2;   % Mid-frequency component amplitude
-    HIGH_FREQ_STRENGTH = 1;  % High-frequency component amplitude
 
-    width = max(1, round(double(width)));
-    height = max(1, round(double(height)));
+    width = max(1, round(width));
+    height = max(1, round(height));
 
-    lowFreq = imgaussfilt(single(randn(height, width)), 12) .* single(LOW_FREQ_STRENGTH);
-    midFreq = imgaussfilt(single(randn(height, width)), 3) .* single(MID_FREQ_STRENGTH);
-    highFreq = single(randn(height, width)) .* single(HIGH_FREQ_STRENGTH);
+    lowFreq = imgaussfilt(single(randn(height, width)), 12) .* single(textureCfg.skinLowFreqStrength);
+    midFreq = imgaussfilt(single(randn(height, width)), 3) .* single(textureCfg.skinMidFreqStrength);
+    highFreq = single(randn(height, width)) .* single(textureCfg.skinHighFreqStrength);
 
     texture = lowFreq + midFreq + highFreq;
 end
@@ -1739,8 +1739,8 @@ end
 function bg = add_lighting_gradient(bg, width, height)
     % Add simple linear lighting gradient to simulate directional lighting (single-aware).
 
-    width = max(1, round(double(width)));
-    height = max(1, round(double(height)));
+    width = max(1, round(width));
+    height = max(1, round(height));
     if width < 50 || height < 50
         return;
     end
@@ -1784,8 +1784,8 @@ function bg = add_sparse_artifacts(bg, width, height, artifactCfg)
     % Placement: unconstrained (artifacts can extend beyond boundaries for uniform spatial distribution)
 
     % Quick guard for tiny backgrounds
-    width = max(1, round(double(width)));
-    height = max(1, round(double(height)));
+    width = max(1, round(width));
+    height = max(1, round(height));
     if width < 8 || height < 8
         return;
     end
@@ -2321,7 +2321,7 @@ function ellipse = conic_to_ellipse(C)
 
     F0 = F + D*xc + E*yc + A*xc^2 + B*xc*yc + Cc*yc^2;
 
-    % Check finiteness first (catches NaN/Inf from upstream operations)
+    % Defensive check (should never trigger with validated inputs upstream)
     if ~all(isfinite([xc, yc, A1, C1, F0]))
         ellipse = invalid_ellipse();
         return;
@@ -2381,12 +2381,12 @@ function angleDeg = normalize_to_angle(value, range, maxAngle)
     end
 
     mid = mean(range);
-    span = (range(2) - range(1)) / 2;
+    span = range(2) - range(1);
     if span <= 0
         angleDeg = 0;
         return;
     end
-    normalized = (value - mid) / span;
+    normalized = 2 * (value - mid) / span;
     angleDeg = normalized * maxAngle;
 end
 
@@ -2397,6 +2397,46 @@ end
 %% =========================================================================
 %% COORDINATE FILE I/O
 %% =========================================================================
+
+function write_coordinates_atomic(coordPath, headerLine, formatFunc, entries)
+    % Generic atomic coordinate writer with deduplication
+    %
+    % Inputs:
+    %   coordPath - target coordinate file path
+    %   headerLine - header line string
+    %   formatFunc - function handle that formats one entry struct as string
+    %   entries - cell array of coordinate entry structs
+
+    tmpPath = tempname(fileparts(coordPath));
+    fid = fopen(tmpPath, 'wt');
+    if fid == -1
+        error('augmentDataset:coordWrite', 'Cannot open temp file: %s', tmpPath);
+    end
+
+    % Write header
+    fprintf(fid, '%s\n', headerLine);
+
+    % Write entries
+    for i = 1:numel(entries)
+        if ~isempty(entries{i})
+            fprintf(fid, '%s\n', formatFunc(entries{i}));
+        end
+    end
+
+    fclose(fid);
+
+    % Atomic move with fallback
+    [ok, msg, msgid] = movefile(tmpPath, coordPath, 'f');
+    if ~ok
+        warning(msgid, 'movefile failed: %s. Trying copyfile fallback.', msg);
+        [ok2, msg2, msgid2] = copyfile(tmpPath, coordPath, 'f');
+        if ok2
+            delete(tmpPath);
+        else
+            error(msgid2, 'Coordinate write failed: %s', msg2);
+        end
+    end
+end
 
 function write_stage2_coordinates(coords, outputDir, filename)
     % Atomically write stage 2 coordinates (deduplicated by image+concentration)
@@ -2426,47 +2466,29 @@ function write_stage2_coordinates(coords, outputDir, filename)
         map(key) = c;
     end
 
-    % Write atomically to a temp file then move over
-    header = 'image concentration x1 y1 x2 y2 x3 y3 x4 y4 rotation';
-    tmpPath = tempname(coordFolder);
-    fid = fopen(tmpPath, 'wt');
-    if fid == -1
-        error('augmentDataset:coordWrite', 'Cannot open temp coordinates file for writing: %s', tmpPath);
-    end
-    fprintf(fid, '%s\n', header);
-
-    keysArr = map.keys;
-    for i = 1:numel(keysArr)
-        e = map(keysArr{i});
+    % Stage 2 format function
+    function str = formatStage2(e)
         verts = round(e.vertices);
-        % Get rotation field, default to 0 if missing
-        if isfield(e, 'rotation')
+        rotation = 0;
+        if isfield(e, 'rotation') && ~isempty(e.rotation)
             rotation = e.rotation;
-        else
-            rotation = 0;
         end
-        fprintf(fid, '%s %d %d %d %d %d %d %d %d %d %.2f\n', ...
-                e.image, e.concentration, ...
-                verts(1,1), verts(1,2), verts(2,1), verts(2,2), ...
-                verts(3,1), verts(3,2), verts(4,1), verts(4,2), ...
-                rotation);
+        str = sprintf('%s %d %d %d %d %d %d %d %d %d %.2f', ...
+            e.image, e.concentration, ...
+            verts(1,1), verts(1,2), verts(2,1), verts(2,2), ...
+            verts(3,1), verts(3,2), verts(4,1), verts(4,2), rotation);
     end
-    fclose(fid);
 
-    % Atomic write using movefile. On failure, use copyfile for cross-volume operations.
-    [ok, msg, msgid] = movefile(tmpPath, coordPath, 'f');
-    if ~ok
-        warning('augmentDataset:coordMove', ...
-                'movefile failed (%s: %s). Attempting copyfile (cross-volume or locked file).', ...
-                msgid, msg);
-        [copied, cmsg] = copyfile(tmpPath, coordPath, 'f');
-        if ~copied
-            if exist(tmpPath, 'file') == 2, delete(tmpPath); end
-            error('augmentDataset:coordWriteFail', ...
-                  'Cannot write coordinates to %s: copyfile failed (%s).', coordPath, cmsg);
-        end
-        if exist(tmpPath, 'file') == 2, delete(tmpPath); end
+    headerLine = 'image concentration x1 y1 x2 y2 x3 y3 x4 y4 rotation';
+
+    % Convert map to cell array
+    keysArr = map.keys;
+    entries = cell(numel(keysArr), 1);
+    for i = 1:numel(keysArr)
+        entries{i} = map(keysArr{i});
     end
+
+    write_coordinates_atomic(coordPath, headerLine, @formatStage2, entries);
 end
 
 function write_stage3_coordinates(coords, outputDir, filename)
@@ -2502,38 +2524,23 @@ function write_stage3_coordinates(coords, outputDir, filename)
         map(key) = c;
     end
 
-    % Write atomically to a temp file then move over
-    header = 'image concentration replicate x y semiMajorAxis semiMinorAxis rotationAngle';
-    tmpPath = tempname(coordFolder);
-    fid = fopen(tmpPath, 'wt');
-    if fid == -1
-        error('augmentDataset:coordWrite', 'Cannot open temp coordinates file for writing: %s', tmpPath);
+    % Stage 3 format function
+    function str = formatStage3(e)
+        str = sprintf('%s %d %d %.2f %.2f %.4f %.4f %.2f', ...
+            e.image, e.concentration, e.replicate, ...
+            e.center(1), e.center(2), e.semiMajor, e.semiMinor, e.rotation);
     end
-    fprintf(fid, '%s\n', header);
 
+    headerLine = 'image concentration replicate x y semiMajorAxis semiMinorAxis rotationAngle';
+
+    % Convert map to cell array
     keysArr = map.keys;
+    entries = cell(numel(keysArr), 1);
     for i = 1:numel(keysArr)
-        e = map(keysArr{i});
-        fprintf(fid, '%s %d %d %.2f %.2f %.4f %.4f %.2f\n', ...
-                e.image, e.concentration, e.replicate, ...
-                e.center(1), e.center(2), e.semiMajor, e.semiMinor, e.rotation);
+        entries{i} = map(keysArr{i});
     end
-    fclose(fid);
 
-    % Atomic write using movefile. On failure, use copyfile for cross-volume operations.
-    [ok, msg, msgid] = movefile(tmpPath, coordPath, 'f');
-    if ~ok
-        warning('augmentDataset:coordMove', ...
-                'movefile failed (%s: %s). Attempting copyfile (cross-volume or locked file).', ...
-                msgid, msg);
-        [copied, cmsg] = copyfile(tmpPath, coordPath, 'f');
-        if ~copied
-            if exist(tmpPath, 'file') == 2, delete(tmpPath); end
-            error('augmentDataset:coordWriteFail', ...
-                  'Cannot write coordinates to %s: copyfile failed (%s).', coordPath, cmsg);
-        end
-        if exist(tmpPath, 'file') == 2, delete(tmpPath); end
-    end
+    write_coordinates_atomic(coordPath, headerLine, @formatStage3, entries);
 end
 
 function lines = read_coordinate_file_lines(coordPath)
@@ -2547,6 +2554,7 @@ function lines = read_coordinate_file_lines(coordPath)
 
     fid = fopen(coordPath, 'rt');
     if fid == -1
+        warning('augmentDataset:coordReadFail', 'Cannot open %s for reading', coordPath);
         return;
     end
     cleaner = onCleanup(@() fclose(fid));
@@ -2574,7 +2582,7 @@ function lines = read_coordinate_file_lines(coordPath)
         if ~isempty(trimmed)
             lineCount = lineCount + 1;
             if lineCount > length(lines)
-                lines{end*2} = [];
+                lines = [lines; cell(1000, 1)];  % Grow in 1000-line chunks
             end
             lines{lineCount} = trimmed;
         end
@@ -2749,12 +2757,17 @@ function valid = is_valid_polygon(vertices, minArea)
 end
 
 function positions = place_polygons_nonoverlapping(polygonBboxes, bgWidth, bgHeight, margin, minSpacing, maxRetries)
-    % Place polygons randomly with collision avoidance.
-    % Complexity: O(numPolygons^2 * maxRetries) - acceptable for small region counts (<20)
+    % Place polygons randomly with collision avoidance using spatial grid acceleration
 
     numPolygons = numel(polygonBboxes);
     positions = cell(numPolygons, 1);
     placedBboxes = zeros(numPolygons, 4);
+
+    % Initialize spatial grid for O(1) collision detection
+    gridCellSize = minSpacing;
+    gridWidth = ceil(bgWidth / gridCellSize);
+    gridHeight = ceil(bgHeight / gridCellSize);
+    grid = cell(gridHeight, gridWidth);
 
     for i = 1:numPolygons
         bbox = polygonBboxes{i};
@@ -2771,19 +2784,45 @@ function positions = place_polygons_nonoverlapping(polygonBboxes, bgWidth, bgHei
 
             candidateBbox = [x, y, x + bbox.width, y + bbox.height];
 
-            % Check overlap with already placed polygons
+            % Check only grid cells in bbox neighborhood
+            cellMinX = max(1, floor((candidateBbox(1) - minSpacing) / gridCellSize) + 1);
+            cellMaxX = min(gridWidth, ceil((candidateBbox(3) + minSpacing) / gridCellSize));
+            cellMinY = max(1, floor((candidateBbox(2) - minSpacing) / gridCellSize) + 1);
+            cellMaxY = min(gridHeight, ceil((candidateBbox(4) + minSpacing) / gridCellSize));
+
             hasOverlap = false;
-            for j = 1:(i-1)
-                if bboxes_overlap(candidateBbox, placedBboxes(j, :), minSpacing)
-                    hasOverlap = true;
-                    break;
+            for cy = cellMinY:cellMaxY
+                for cx = cellMinX:cellMaxX
+                    cellPolygons = grid{cy, cx};
+                    for k = 1:numel(cellPolygons)
+                        j = cellPolygons(k);
+                        if bboxes_overlap(candidateBbox, placedBboxes(j, :), minSpacing)
+                            hasOverlap = true;
+                            break;
+                        end
+                    end
+                    if hasOverlap, break; end
                 end
+                if hasOverlap, break; end
             end
 
             if ~hasOverlap
                 positions{i} = struct('x', x, 'y', y);
                 placedBboxes(i, :) = candidateBbox;
                 placed = true;
+
+                % Add to grid
+                cellMinX = max(1, floor(candidateBbox(1) / gridCellSize) + 1);
+                cellMaxX = min(gridWidth, ceil(candidateBbox(3) / gridCellSize));
+                cellMinY = max(1, floor(candidateBbox(2) / gridCellSize) + 1);
+                cellMaxY = min(gridHeight, ceil(candidateBbox(4) / gridCellSize));
+
+                for cy = cellMinY:cellMaxY
+                    for cx = cellMinX:cellMaxX
+                        grid{cy, cx} = [grid{cy, cx}, i];
+                    end
+                end
+
                 break;
             end
 
