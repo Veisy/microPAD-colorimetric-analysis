@@ -56,7 +56,7 @@ def restructure_for_yolo() -> int:
         images_dir.mkdir(exist_ok=True)
 
         images_in_root = []
-        for ext in ["*.jpg", "*.jpeg", "*.png"]:
+        for ext in ["*.png"]:
             for img_path in phone_path.glob(ext):
                 if img_path.parent == phone_path:
                     images_in_root.append(img_path)
@@ -98,7 +98,7 @@ def collect_image_paths(phone_dir: str, use_absolute_paths: bool = True) -> List
         raise FileNotFoundError(f"Images directory not found: {phone_path}")
 
     images = []
-    for ext in ["*.jpg", "*.jpeg", "*.png"]:
+    for ext in ["*.png"]:
         images.extend(phone_path.glob(ext))
 
     if not images:
@@ -177,7 +177,7 @@ def generate_yolo_labels() -> Tuple[int, int]:
         for base_name, polygons in image_polygons.items():
             # Find corresponding image file
             img_path = None
-            for ext in ['.jpg', '.jpeg', '.png']:
+            for ext in ['.png']:
                 candidate = images_dir / f"{base_name}{ext}"
                 if candidate.exists():
                     img_path = candidate
