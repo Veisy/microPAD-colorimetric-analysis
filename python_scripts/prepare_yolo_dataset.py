@@ -563,9 +563,9 @@ def print_summary(
     print("1. Activate environment: conda activate microPAD-python-env")
     print("2. Train model:")
     print("   python python_scripts/train_yolo.py --stage 1")
-    print("   (YOLO scales images to 960x960 at runtime)")
+    print("   (YOLO scales images to 1280x1280 at runtime)")
     print("   Or customize resolution:")
-    print("   python python_scripts/train_yolo.py --stage 1 --imgsz 960 --batch 24")
+    print("   python python_scripts/train_yolo.py --stage 1 --imgsz 1280 --batch 24")
     print("="*60)
 
 

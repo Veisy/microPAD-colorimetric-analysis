@@ -81,7 +81,7 @@ This script:
 
 ## Training
 
-### Phase 3.3: Train YOLOv11n-seg
+### Phase 3.3: Train YOLOv11s-pose
 
 **On workstation with dual A6000 GPUs:**
 
@@ -97,22 +97,22 @@ cd python_scripts
 python train_yolo.py
 
 # Stage 2: Fine-tune with manual labels (when available)
-python train_yolo.py --stage 2 --weights ../micropad_detection/yolo11n_synth/weights/best.pt
+python train_yolo.py --stage 2 --weights training_runs/yolo11s_pose_1280/weights/best.pt
 
 # Validate trained model
-python train_yolo.py --validate --weights ../micropad_detection/yolo11n_synth/weights/best.pt
+python train_yolo.py --validate --weights training_runs/yolo11s_pose_1280/weights/best.pt
 
-# Export to ONNX and TFLite
-python train_yolo.py --export --weights ../micropad_detection/yolo11n_synth/weights/best.pt
+# Export to TFLite
+python train_yolo.py --export --weights training_runs/yolo11s_pose_1280/weights/best.pt
 ```
 
 **Custom training parameters:**
 ```bash
 # Custom epochs, batch size, single GPU
-python train_yolo.py --epochs 200 --batch 16 --device 0
+python train_yolo.py --epochs 250 --batch 16 --device 0
 
-# Try different resolution (640, 800, or 960)
-python train_yolo.py --imgsz 800 --batch 28
+# Try different resolution (960, 1280, or 1536)
+python train_yolo.py --imgsz 1536 --batch 16
 
 # Export with INT8 quantization for Android
 python train_yolo.py --export --weights best.pt --formats tflite --int8
@@ -124,42 +124,42 @@ python train_yolo.py --export --weights best.pt --formats tflite --int8
 conda activate microPAD-python-env
 
 # Stage 1: Train on synthetic data
-yolo segment train \
-    model=yolo11n-seg.pt \
+yolo pose train \
+    model=yolo11s-pose.pt \
     data=python_scripts/configs/micropad_synth.yaml \
-    epochs=150 \
-    imgsz=960 \
-    batch=24 \
-    device=0,1 \
-    project=micropad_detection \
-    name=yolo11n_synth \
+    epochs=200 \
+    imgsz=1280 \
+    batch=32 \
+    device=0,2 \
+    project=training_runs \
+    name=yolo11s_pose_1280 \
     patience=20
 ```
 
 **Training parameters explained:**
-- `model=yolo11n-seg.pt`: YOLOv11-nano segmentation (smallest, fastest)
-- `epochs=150`: Maximum training epochs (Stage 1), 80 (Stage 2)
-- `imgsz=960`: Input image size (960x960 for better detail)
-- `batch=24`: Batch size optimized for 960 resolution on dual A6000 GPUs
-- `device=0,1`: Use both A6000 GPUs
+- `model=yolo11s-pose.pt`: YOLOv11-small pose (keypoint detection, balanced speed/accuracy)
+- `epochs=200`: Maximum training epochs (Stage 1), 150 (Stage 2)
+- `imgsz=1280`: Input image size (1280x1280 optimized for high-res smartphone photos)
+- `batch=32`: Batch size optimized for 1280 resolution on dual A6000 GPUs
+- `device=0,2`: Use dual A6000 GPUs (homogeneous pairing)
 - `patience=20`: Early stopping patience (15 for Stage 2)
 
 **Expected training time:**
-- ~2-3 hours on dual A6000 (48GB each) at 960 resolution
-- ~1-2 hours at 640 resolution (if using lower resolution)
+- ~3-4 hours on dual A6000 (48GB each) at 1280 resolution
+- ~2-3 hours at 960 resolution (if using lower resolution)
 
 **Target metrics:**
-- Mask mAP@50 > 0.85
+- Keypoint mAP@50 (OKS) > 0.85
 - Detection rate > 85% on validation set
 
 ### Monitor Training
 
 ```bash
 # TensorBoard (if installed)
-tensorboard --logdir micropad_detection/yolo11n_synth
+tensorboard --logdir training_runs/yolo11s_pose_1280
 
 # Or view results in:
-# micropad_detection/yolo11n_synth/results.png
+# training_runs/yolo11s_pose_1280/results.png
 ```
 
 ## Export Models
@@ -169,11 +169,8 @@ tensorboard --logdir micropad_detection/yolo11n_synth
 #### Using train_yolo.py (Recommended)
 
 ```bash
-# Export to ONNX (MATLAB) and TFLite (Android) with one command
-python train_yolo.py --export --weights ../micropad_detection/yolo11n_synth/weights/best.pt
-
-# Export only ONNX
-python train_yolo.py --export --weights best.pt --formats onnx
+# Export to TFLite (Android) with one command
+python train_yolo.py --export --weights training_runs/yolo11s_pose_1280/weights/best.pt
 
 # Export TFLite with INT8 quantization (if FP16 > 50ms)
 python train_yolo.py --export --weights best.pt --formats tflite --int8
@@ -182,30 +179,22 @@ python train_yolo.py --export --weights best.pt --formats tflite --int8
 #### Using YOLO CLI directly (Alternative)
 
 ```bash
-# 1. ONNX for MATLAB
+# 1. TFLite for Android (FP16)
 yolo export \
-    model=micropad_detection/yolo11n_synth/weights/best.pt \
-    format=onnx \
-    imgsz=960 \
-    simplify=True
-
-# 2. TFLite for Android (FP16)
-yolo export \
-    model=micropad_detection/yolo11n_synth/weights/best.pt \
+    model=training_runs/yolo11s_pose_1280/weights/best.pt \
     format=tflite \
-    imgsz=960 \
+    imgsz=1280 \
     half=True
 
-# 3. INT8 quantization (if FP16 inference > 50ms)
+# 2. INT8 quantization (if FP16 inference > 50ms)
 yolo export \
-    model=micropad_detection/yolo11n_synth/weights/best.pt \
+    model=training_runs/yolo11s_pose_1280/weights/best.pt \
     format=tflite \
-    imgsz=960 \
+    imgsz=1280 \
     int8=True
 ```
 
 **Exported files:**
-- `best.onnx`: For MATLAB integration
 - `best_fp16.tflite` or `best_saved_model/`: For Android (start with FP16)
 - `best_int8.tflite`: For Android (if FP16 too slow)
 

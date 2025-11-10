@@ -22,7 +22,7 @@ function cut_micropads(varargin)
     % - 'inputFolder' | 'outputFolder': override default I/O folders
     % - 'saveCoordinates': output behavior
     % - 'useAIDetection': use YOLO for initial polygon placement (default: true)
-    % - 'detectionModel': path to YOLOv11 pose model (default: 'models/yolo11m_micropad_pose.pt')
+    % - 'detectionModel': path to YOLOv11 pose model (default: 'models/yolo11s-micropad-pose-1280.pt')
     % - 'minConfidence': minimum detection confidence (default: 0.6)
     % - 'inferenceSize': YOLO inference image size in pixels (default: 1280)
     % - 'pythonPath': path to Python executable (default: '' - uses MICROPAD_PYTHON env var)
@@ -80,7 +80,7 @@ function cut_micropads(varargin)
 
     % === AI DETECTION DEFAULTS ===
     DEFAULT_USE_AI_DETECTION = false;
-    DEFAULT_DETECTION_MODEL = 'models/yolo11m_micropad_pose.pt';
+    DEFAULT_DETECTION_MODEL = 'models/yolo11s-micropad-pose-1280.pt';
     DEFAULT_MIN_CONFIDENCE = 0.6;
 
     % IMPORTANT: Edit this path to match your Python installation!
@@ -89,7 +89,7 @@ function cut_micropads(varargin)
     %   macOS:   '/Users/YourName/miniconda3/envs/YourPythonEnv/bin/python'
     %   Linux:   '/home/YourName/miniconda3/envs/YourPythonEnv/bin/python'
     DEFAULT_PYTHON_PATH = 'C:\Users\veyse\miniconda3\envs\microPAD-python-env\python.exe';
-    DEFAULT_INFERENCE_SIZE = 960;
+    DEFAULT_INFERENCE_SIZE = 1280;
 
     % === ROTATION CONSTANTS ===
     ROTATION_ANGLE_TOLERANCE = 1e-6;  % Tolerance for detecting exact 90-degree rotations

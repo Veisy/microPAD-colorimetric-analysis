@@ -253,8 +253,8 @@ class_id x1 y1 vis1 x2 y2 vis2 x3 y3 vis3 x4 y4 vis4
 from ultralytics import YOLO
 
 # Train YOLOv11 pose model
-model = YOLO('yolo11m-pose.pt')
-model.train(data='micropad_synth.yaml', epochs=150, imgsz=960)
+model = YOLO('yolo11s-pose.pt')
+model.train(data='micropad_synth.yaml', epochs=200, imgsz=1280)
 ```
 
 **Dataset YAML configuration:**

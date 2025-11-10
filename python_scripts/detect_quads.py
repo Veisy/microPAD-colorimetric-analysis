@@ -5,13 +5,12 @@ Standalone YOLO inference script for microPAD quad detection using pose keypoint
 Called by MATLAB cut_micropads.m to perform AI-based polygon detection.
 Accepts image path and outputs detected quad coordinates to stdout.
 
-This script uses YOLOv11m-pose to detect quadrilateral concentration zones on microPAD
+This script uses YOLOv11s-pose to detect quadrilateral concentration zones on microPAD
 images by predicting 4 corner keypoints directly. No polygon simplification is needed.
 
 Model Configuration:
-    - Architecture: YOLOv11m-pose
-    - Training Resolution: 960×960 pixels
-    - Training Performance: 94.19% mAP50-95, 96.47% precision, 92.27% recall
+    - Architecture: YOLOv11s-pose (small model for faster inference)
+    - Training Resolution: 1280×1280 pixels (optimized for high-res smartphone photos)
     - Default Confidence: 0.6 (60%)
 
 Usage:
@@ -38,15 +37,15 @@ import numpy as np
 def parse_args():
     """Parse command line arguments.
 
-    Default values match the trained YOLOv11m-pose model configuration:
-    - imgsz=960: Model was trained at 960×960 resolution
-    - conf=0.6: Balanced threshold for 94.2% mAP model (96.5% precision, 92.3% recall)
+    Default values match the trained YOLOv11s-pose model configuration:
+    - imgsz=1280: Model was trained at 1280×1280 resolution (optimized for smartphone photos)
+    - conf=0.6: Balanced detection threshold
     """
     parser = argparse.ArgumentParser(
-        description="YOLOv11m-pose quad detection for microPAD concentration zones"
+        description="YOLOv11s-pose quad detection for microPAD concentration zones"
     )
     parser.add_argument("image_path", type=str, help="Path to input image")
-    parser.add_argument("model_path", type=str, help="Path to YOLOv11m-pose model (.pt)")
+    parser.add_argument("model_path", type=str, help="Path to YOLOv11s-pose model (.pt)")
     parser.add_argument(
         "--conf",
         type=float,
@@ -56,8 +55,8 @@ def parse_args():
     parser.add_argument(
         "--imgsz",
         type=int,
-        default=960,
-        help="Inference image size in pixels (default: 960, matches training resolution)"
+        default=1280,
+        help="Inference image size in pixels (default: 1280, matches training resolution)"
     )
     return parser.parse_args()
 
@@ -96,18 +95,18 @@ def order_corners_clockwise(quad: np.ndarray) -> np.ndarray:
     return quad_ordered
 
 
-def detect_quads(image_path: str, model_path: str, conf_threshold: float = 0.6, imgsz: int = 960) -> Tuple[List[np.ndarray], List[float]]:
-    """Run YOLOv11m-pose inference and extract concentration zone keypoint coordinates.
+def detect_quads(image_path: str, model_path: str, conf_threshold: float = 0.6, imgsz: int = 1280) -> Tuple[List[np.ndarray], List[float]]:
+    """Run YOLOv11s-pose inference and extract concentration zone keypoint coordinates.
 
-    This function runs the trained YOLOv11m-pose model (94.19% mAP50-95) to detect
-    microPAD concentration zones. Each detection consists of 4 corner keypoints
+    This function runs the trained YOLOv11s-pose model to detect microPAD
+    concentration zones. Each detection consists of 4 corner keypoints
     representing a quadrilateral polygon.
 
     Args:
         image_path: Path to input microPAD image
-        model_path: Path to YOLOv11m-pose model (.pt file)
+        model_path: Path to YOLOv11s-pose model (.pt file)
         conf_threshold: Confidence threshold for detections (0.5-0.7 recommended)
-        imgsz: Inference image size (default: 960 to match training resolution)
+        imgsz: Inference image size (default: 1280 to match training resolution)
 
     Returns:
         Tuple of (quads, confidences) where:
@@ -115,7 +114,7 @@ def detect_quads(image_path: str, model_path: str, conf_threshold: float = 0.6, 
         - confidences: List of detection confidence scores [0, 1]
 
     Note:
-        Optimal performance when imgsz=960 (training resolution).
+        Optimal performance when imgsz=1280 (training resolution).
         Expected output: 7 detections per microPAD strip at conf=0.6.
     """
     from ultralytics import YOLO
@@ -171,9 +170,9 @@ def main():
     MATLAB callers must add 1 to convert to 1-based indexing.
 
     Expected workflow:
-    1. MATLAB calls: python detect_quads.py image.jpg model.pt --conf 0.6 --imgsz 960
-    2. Script loads YOLOv11m-pose model (94.2% mAP)
-    3. Runs inference at 960×960 resolution
+    1. MATLAB calls: python detect_quads.py image.jpg model.pt --conf 0.6 --imgsz 1280
+    2. Script loads YOLOv11s-pose model
+    3. Runs inference at 1280×1280 resolution (optimized for smartphone photos)
     4. Detects 7 concentration zones (4 corners each)
     5. Outputs coordinates to stdout for MATLAB to parse
     """
@@ -188,7 +187,7 @@ def main():
     if not Path(args.model_path).exists():
         print(f"ERROR: Model not found: {args.model_path}", file=sys.stderr)
         print(f"  Searched path: {Path(args.model_path).resolve()}", file=sys.stderr)
-        print(f"  Expected location: models/yolo11m_micropad_pose.pt", file=sys.stderr)
+        print(f"  Expected location: models/yolo11s-micropad-pose-1280.pt", file=sys.stderr)
         sys.exit(1)
 
     # Validate confidence threshold

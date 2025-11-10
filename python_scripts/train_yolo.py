@@ -45,13 +45,13 @@ except ImportError:
 # ============================================================================
 
 # Model configuration
-DEFAULT_MODEL = 'yolo11m-pose.pt'
-DEFAULT_IMAGE_SIZE = 960
+DEFAULT_MODEL = 'yolo11s-pose.pt'
+DEFAULT_IMAGE_SIZE = 1280
 
 # Training hyperparameters (optimized for dual A6000 workstation)
 DEFAULT_BATCH_SIZE = 32              # 16 per GPU on dual A6000 setup
-DEFAULT_EPOCHS_STAGE1 = 150          # Sufficient for convergence on synthetic data
-DEFAULT_EPOCHS_STAGE2 = 80           # Fine-tuning with early stopping
+DEFAULT_EPOCHS_STAGE1 = 200          # Extended training for better convergence
+DEFAULT_EPOCHS_STAGE2 = 150          # Extended fine-tuning with early stopping
 DEFAULT_PATIENCE_STAGE1 = 20         # Early stopping patience
 DEFAULT_PATIENCE_STAGE2 = 15
 DEFAULT_LEARNING_RATE_STAGE2 = 0.01  # Lower LR for fine-tuning
@@ -140,13 +140,13 @@ class YOLOTrainer:
         patience: int = DEFAULT_PATIENCE_STAGE1,
         workers: int = DEFAULT_NUM_WORKERS,
         cache: Union[bool, str] = DEFAULT_CACHE_ENABLED,
-        name: str = 'yolo11m_pose',
+        name: str = 'yolo11s_pose_1280',
         **kwargs
     ) -> Dict[str, Any]:
         """Train Stage 1: Synthetic data pretraining.
 
         Args:
-            model: YOLOv11 pretrained model for keypoint detection
+            model: YOLOv11 pretrained model for keypoint detection (default: yolo11s-pose.pt)
             data: Dataset config file in configs/ directory
             epochs: Maximum training epochs
             imgsz: Input image size
@@ -250,7 +250,7 @@ class YOLOTrainer:
         workers: int = DEFAULT_NUM_WORKERS,
         cache: Union[bool, str] = DEFAULT_CACHE_ENABLED,
         lr0: float = DEFAULT_LEARNING_RATE_STAGE2,
-        name: str = 'yolo11m_pose_stage2',
+        name: str = 'yolo11s_pose_1280_stage2',
         **kwargs
     ) -> Dict[str, Any]:
         """Train Stage 2: Fine-tuning with mixed data.
@@ -518,19 +518,19 @@ Examples:
   python train_yolo.py --stage 1  # Explicit stage 1
 
   # Train Stage 2 (fine-tuning with manual labels)
-  python train_yolo.py --stage 2 --weights training_runs/yolo11m_pose/weights/best.pt
+  python train_yolo.py --stage 2 --weights training_runs/yolo11s_pose_1280/weights/best.pt
 
   # Validate model
-  python train_yolo.py --validate --weights training_runs/yolo11m_pose/weights/best.pt
+  python train_yolo.py --validate --weights training_runs/yolo11s_pose_1280/weights/best.pt
 
   # Export to TFLite for mobile deployment
-  python train_yolo.py --export --weights training_runs/yolo11m_pose/weights/best.pt
+  python train_yolo.py --export --weights training_runs/yolo11s_pose_1280/weights/best.pt
 
   # Export with FP32 precision (instead of default FP16)
-  python train_yolo.py --export --weights training_runs/yolo11m_pose/weights/best.pt --no-half
+  python train_yolo.py --export --weights training_runs/yolo11s_pose_1280/weights/best.pt --no-half
 
   # Export with INT8 quantization
-  python train_yolo.py --export --weights training_runs/yolo11m_pose/weights/best.pt --int8
+  python train_yolo.py --export --weights training_runs/yolo11s_pose_1280/weights/best.pt --int8
 
   # Custom training parameters (adjust batch size, workers, cache strategy)
   python train_yolo.py --stage 1 --epochs 200 --batch 128 --workers 16 --cache disk
@@ -642,7 +642,7 @@ Examples:
             # Stage 2: Fine-tuning
             if not args.weights:
                 print("ERROR: --weights required for Stage 2 fine-tuning")
-                print("Example: --weights training_runs/yolo11m_pose/weights/best.pt")
+                print("Example: --weights training_runs/yolo11s_pose_1280/weights/best.pt")
                 sys.exit(1)
 
             train_kwargs = {}
@@ -683,7 +683,7 @@ Examples:
             # Validation
             if not args.weights:
                 print("ERROR: --weights required for validation")
-                print("Example: --weights training_runs/yolo11m_pose/weights/best.pt")
+                print("Example: --weights training_runs/yolo11s_pose_1280/weights/best.pt")
                 sys.exit(1)
 
             trainer.validate(
@@ -697,7 +697,7 @@ Examples:
             # Export
             if not args.weights:
                 print("ERROR: --weights required for export")
-                print("Example: --weights training_runs/yolo11m_pose/weights/best.pt")
+                print("Example: --weights training_runs/yolo11s_pose_1280/weights/best.pt")
                 sys.exit(1)
 
             trainer.export(
