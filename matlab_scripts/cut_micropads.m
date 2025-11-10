@@ -79,7 +79,7 @@ function cut_micropads(varargin)
     DEFAULT_GAP_PERCENT = 0.19;  % 19% gap between regions
 
     % === AI DETECTION DEFAULTS ===
-    DEFAULT_USE_AI_DETECTION = true;
+    DEFAULT_USE_AI_DETECTION = false;
     DEFAULT_DETECTION_MODEL = 'models/yolo11m_micropad_pose.pt';
     DEFAULT_MIN_CONFIDENCE = 0.6;
 
@@ -779,6 +779,8 @@ function buildEditingUI(fig, img, imageName, phoneName, cfg, initialPolygons, in
     guiData.asyncDetection.startTime = [];        % tic() timestamp
     guiData.asyncDetection.pollingTimer = [];     % Timer handle
     guiData.asyncDetection.timeoutSeconds = 10;   % Max detection time
+    guiData.asyncDetection.launchRotation = 0;    % Rotation at launch
+    guiData.asyncDetection.launchImgSize = [0, 0]; % Image size at launch [width, height]
 
     % Add concentration labels
     guiData.polygonLabels = addPolygonLabels(guiData.polygons, guiData.imgAxes);
@@ -1566,6 +1568,13 @@ function applyRotation_UI(angle, fig, cfg)
         return;
     end
 
+    % Cancel pending detection before rotation
+    if isfield(guiData, 'asyncDetection') && guiData.asyncDetection.active
+        fprintf('  Rotation requested - canceling in-flight detection...\n');
+        cancelActiveDetection(fig, guiData, cfg);
+        guiData = get(fig, 'UserData');  % Refresh after cleanup
+    end
+
     % Update rotation state (quick buttons are absolute presets)
     guiData.adjustmentRotation = angle;
     guiData.memoryRotation = angle;
@@ -1650,6 +1659,12 @@ function applyRotation_UI(angle, fig, cfg)
 
     % Save guiData
     set(fig, 'UserData', guiData);
+
+    % Re-trigger detection after rotation completes
+    if cfg.useAIDetection
+        fprintf('  Relaunching detection with new rotation...\n');
+        runDeferredAIDetection(fig, cfg);
+    end
 end
 
 function zoomSliderCallback(slider, fig, cfg)
@@ -1957,39 +1972,6 @@ function clamped = clampPolygonToImage(poly, imageSize)
     clamped(:, 2) = max(1, min(height, clamped(:, 2)));
 end
 
-function sortedQuads = normalizePolygonsForDisplay(detectedQuads, totalRotation, imgSize, baseImgSize, angleTolerance)
-    % Sort YOLO-detected quadrilaterals by base-frame X coordinate for stable labeling
-    %
-    % IMPORTANT: Preserves actual quadrilateral geometry (no conversion to rectangles)
-    %
-    % Inputs:
-    %   detectedQuads - YOLO output [N x 4 x 2] in currentImg (rotated frame)
-    %   totalRotation - cumulative rotation in degrees
-    %   imgSize - [height, width] of currentImg
-    %   baseImgSize - [height, width] of base image
-    %   angleTolerance - tolerance for rotation angle comparisons
-    %
-    % Outputs:
-    %   sortedQuads - [N x 4 x 2] quadrilaterals sorted left-to-right in base frame
-
-    if isempty(detectedQuads)
-        sortedQuads = detectedQuads;
-        return;
-    end
-
-    % Compute centroids in current frame
-    centroids = squeeze(mean(detectedQuads, 2));  % [N x 2]
-
-    % Transform centroids to base frame for stable sorting
-    baseCentroids = inverseRotatePoints(centroids, imgSize, baseImgSize, totalRotation, angleTolerance);
-
-    % Sort by base-frame X coordinate (left-to-right ordering)
-    [~, sortIdx] = sort(baseCentroids(:, 1));
-
-    % Apply sort to preserve actual quadrilateral vertices
-    sortedQuads = detectedQuads(sortIdx, :, :);
-end
-
 function updatePolygonLabels(polygons, labelHandles)
     % Update label positions to follow polygon top edges
     %
@@ -2036,62 +2018,6 @@ function updatePolygonLabelsCallback(polygon, ~)
     guiData = get(fig, 'UserData');
     if isfield(guiData, 'polygons') && isfield(guiData, 'polygonLabels')
         updatePolygonLabels(guiData.polygons, guiData.polygonLabels);
-    end
-end
-
-function basePoints = inverseRotatePoints(rotatedPoints, ~, baseSize, rotation, angleTolerance)
-    % Transform points from rotated image frame back to base image frame
-    %
-    % Inputs:
-    %   rotatedPoints - [N x 2] points in rotated frame
-    %   baseSize - [height, width] of base image
-    %   rotation - rotation angle in degrees (cumulative)
-    %   angleTolerance - tolerance for detecting exact 90-degree rotations
-    %
-    % Outputs:
-    %   basePoints - [N x 2] points in base image frame
-
-    if isempty(rotatedPoints)
-        basePoints = rotatedPoints;
-        return;
-    end
-
-    % Only handle multiples of 90 degrees
-    if ~isMultipleOfNinety(rotation, angleTolerance)
-        basePoints = rotatedPoints;
-        return;
-    end
-
-    k = mod(round(rotation / 90), 4);
-    if k == 0
-        basePoints = rotatedPoints;
-        return;
-    end
-
-    H_base = baseSize(1);
-    W_base = baseSize(2);
-
-    basePoints = zeros(size(rotatedPoints));
-
-    % Inverse transformations (opposite of rotatePolygonsDiscrete)
-    switch k
-        case 1  % Rotated 90 CW, so inverse is 90 CCW (270 CW)
-            % Original: x' = H - y + 1, y' = x
-            % Inverse: x = y', y = H - x' + 1
-            basePoints(:, 1) = rotatedPoints(:, 2);
-            basePoints(:, 2) = H_base - rotatedPoints(:, 1) + 1;
-
-        case 2  % Rotated 180, so inverse is also 180
-            % Original: x' = W - x + 1, y' = H - y + 1
-            % Inverse: x = W - x' + 1, y = H - y' + 1
-            basePoints(:, 1) = W_base - rotatedPoints(:, 1) + 1;
-            basePoints(:, 2) = H_base - rotatedPoints(:, 2) + 1;
-
-        case 3  % Rotated 270 CW (90 CCW), so inverse is 90 CW
-            % Original: x' = y, y' = W - x + 1
-            % Inverse: x = W - y' + 1, y = x'
-            basePoints(:, 1) = W_base - rotatedPoints(:, 2) + 1;
-            basePoints(:, 2) = rotatedPoints(:, 1);
     end
 end
 
@@ -2239,6 +2165,13 @@ end
 
 function stopExecution(fig)
     guiData = get(fig, 'UserData');
+
+    % Cancel any in-flight async detection
+    if isfield(guiData, 'cfg')
+        cancelActiveDetection(fig, guiData, guiData.cfg);
+        guiData = get(fig, 'UserData');
+    end
+
     guiData.action = 'stop';
     set(fig, 'UserData', guiData);
     uiresume(fig);
@@ -2265,10 +2198,10 @@ function rerunAIDetection(fig, cfg)
         return;
     end
 
-    % Avoid launching another job while one is already running
+    % Cancel existing detection before rerun
     if isfield(guiData, 'asyncDetection') && guiData.asyncDetection.active
-        fprintf('  AI detection already running - ignoring manual rerun request\n');
-        return;
+        fprintf('  Manual rerun requested - canceling current detection...\n');
+        cancelActiveDetection(fig, guiData, cfg);
     end
 
     fprintf('  Re-running AI detection asynchronously...\n');
@@ -2462,6 +2395,7 @@ function [existingNames, existingNums] = readExistingCoordinates(coordPath, scan
                     ['Coordinate file has invalid format: %d columns found, expected %d.\n' ...
                      'File: %s\n' ...
                      'This project requires the current 10-column format (image, concentration, x1, y1, x2, y2, x3, y3, x4, y4, rotation).\n' ...
+                     'NOTE: This project is in active development mode with no backward compatibility.\n' ...
                      'Delete the corrupted file and rerun the stage to regenerate.'], ...
                     size(nums, 2), numericCount, coordPath);
             end
@@ -2998,11 +2932,9 @@ end
 function scaledPolygons = scalePolygonsForImageSize(polygons, oldSize, newSize)
     % Scale polygon coordinates when image dimensions change
     if isempty(oldSize) || any(oldSize <= 0) || isempty(newSize) || any(newSize <= 0)
-        scaledPolygons = polygons;
-        warning('cut_micropads:invalid_image_size', ...
-                'Invalid image dimensions for scaling: old=[%d %d], new=[%d %d]', ...
-                oldSize(1), oldSize(2), newSize(1), newSize(2));
-        return;
+        error('cut_micropads:invalid_dimensions', ...
+            'Cannot scale polygons: invalid dimensions [%d %d] -> [%d %d]', ...
+            oldSize(1), oldSize(2), newSize(1), newSize(2));
     end
 
     oldHeight = oldSize(1);
@@ -3069,8 +3001,9 @@ function runDeferredAIDetection(fig, cfg)
     guiData = get(fig, 'UserData');
 
     try
-        % Launch async detection
-        img = guiData.currentImg;
+        % Launch async detection on BASE (unrotated) image
+        % AI works on original image frame, coordinates are then rotated to match display
+        img = guiData.baseImg;
         [~, ~, outputFile, imgPath] = detectQuadsYOLO(img, cfg, 'async', true);
 
         % Store detection state
@@ -3078,6 +3011,9 @@ function runDeferredAIDetection(fig, cfg)
         guiData.asyncDetection.outputFile = outputFile;
         guiData.asyncDetection.imgPath = imgPath;
         guiData.asyncDetection.startTime = tic;
+        % Capture launch state for validation
+        guiData.asyncDetection.launchRotation = guiData.totalRotation;
+        guiData.asyncDetection.launchImgSize = [size(guiData.currentImg, 2), size(guiData.currentImg, 1)];  % [width, height]
 
         % Create polling timer (100ms interval)
         guiData.asyncDetection.pollingTimer = timer(...
@@ -3093,8 +3029,8 @@ function runDeferredAIDetection(fig, cfg)
         % Failed to launch - clean up and fall back to default geometry
         warning('cut_micropads:async_launch_failed', ...
                 'Failed to launch async detection: %s', ME.message);
-        guiData.asyncDetection.active = false;
-        showAIProgressIndicator(fig, false);
+        cancelActiveDetection(fig, guiData, cfg);
+        guiData = get(fig, 'UserData');
         set(fig, 'UserData', guiData);
     end
 end
@@ -3129,10 +3065,10 @@ function pollDetectionStatus(fig, cfg)
         return;
     end
 
-    % Check if detection completed
+    % Check if detection completed (validate against base image dimensions)
     [isComplete, quads, confidences, errorMsg] = checkDetectionComplete(...
         guiData.asyncDetection.outputFile, ...
-        guiData.currentImg);
+        guiData.baseImg);
 
     if ~isComplete
         return;  % Still running, keep polling
@@ -3150,15 +3086,29 @@ function pollDetectionStatus(fig, cfg)
         numDetected = size(quads, 1);
 
         if numDetected >= cfg.numSquares
+            % Validate launch state matches current UI state
+            launchRot = guiData.asyncDetection.launchRotation;
+            currentRot = guiData.totalRotation;
+            launchSize = guiData.asyncDetection.launchImgSize;
+            currentSize = [size(guiData.currentImg, 2), size(guiData.currentImg, 1)];
+
+            if launchRot ~= currentRot || ~isequal(launchSize, currentSize)
+                fprintf('  Discarding stale detection (rotation/size changed during detection). Fresh detection will launch.\n');
+                cleanupAsyncDetection(fig, guiData, false, cfg);
+                return;
+            end
+
             % Use top N detections by confidence
             [~, sortIdx] = sort(confidences, 'descend');
             quads = quads(sortIdx(1:cfg.numSquares), :, :);
             topConfidences = confidences(sortIdx(1:cfg.numSquares));
 
-            % Normalize and apply polygons respecting UI ordering
-            newPolygons = normalizePolygonsForDisplay(quads, guiData.totalRotation, ...
-                                                      guiData.imageSize, guiData.baseImageSize, ...
-                                                      cfg.rotation.angleTolerance);
+            % Transform base-frame detections to current display frame
+            % AI worked on baseImg, so quads are in base frame - rotate forward to match display
+            [newPolygons, ~] = rotatePolygonsDiscrete(quads, guiData.baseImageSize, guiData.totalRotation);
+            
+            % Sort by display-frame X coordinate for consistent labeling
+            newPolygons = sortPolygonArrayByX(newPolygons);
 
             % Apply detected polygons with race condition guard
             try
@@ -3190,20 +3140,24 @@ function pollDetectionStatus(fig, cfg)
 
     % Clear cached zoom bounds after detection (with race condition guard)
     try
-        % Force recalculation of zoom bounds from current polygon state
-        guiData.autoZoomBounds = [];
+        if isvalid(fig)
+            % Force recalculation of zoom bounds from current polygon state
+            guiData.autoZoomBounds = [];
 
-        % Save state to figure
-        set(fig, 'UserData', guiData);
+            % Save state to figure
+            set(fig, 'UserData', guiData);
 
-        % Re-fetch guiData to ensure cleanup gets fresh state (handles concurrent updates)
-        guiData = get(fig, 'UserData');
+            % Re-fetch guiData to ensure cleanup gets fresh state (handles concurrent updates)
+            guiData = get(fig, 'UserData');
 
-        % Clean up async state
-        cleanupAsyncDetection(fig, guiData, detectionSucceeded, cfg);
+            % Clean up async state
+            cleanupAsyncDetection(fig, guiData, detectionSucceeded, cfg);
+        end
     catch ME
         % Figure was deleted during final state update - ignore error
-        if ~strcmp(ME.identifier, 'MATLAB:class:InvalidHandle')
+        if strcmp(ME.identifier, 'MATLAB:class:InvalidHandle')
+            return;
+        else
             rethrow(ME);
         end
     end
@@ -3249,17 +3203,45 @@ function cleanupAsyncDetection(fig, guiData, success, cfg)
     guiData.asyncDetection.imgPath = '';
     guiData.asyncDetection.startTime = [];
     guiData.asyncDetection.pollingTimer = [];
+    guiData.asyncDetection.launchRotation = 0;
+    guiData.asyncDetection.launchImgSize = [0, 0];
 
-    % Stop animation
-    showAIProgressIndicator(fig, false);
+    % Stop animation and apply auto-zoom (with race condition guard)
+    try
+        if isvalid(fig)
+            % Stop animation
+            showAIProgressIndicator(fig, false);
 
-    % Update guiData
-    set(fig, 'UserData', guiData);
+            % Update guiData
+            set(fig, 'UserData', guiData);
 
-    % Apply auto-zoom if detection succeeded
-    if success
-        applyAutoZoom(fig, guiData, cfg);
+            % Apply auto-zoom if detection succeeded
+            if success
+                applyAutoZoom(fig, guiData, cfg);
+            end
+        end
+    catch ME
+        % Figure was deleted during cleanup - ignore error
+        if ~strcmp(ME.identifier, 'MATLAB:class:InvalidHandle')
+            rethrow(ME);
+        end
     end
+end
+
+function cancelActiveDetection(fig, guiData, cfg)
+    % Cancel any in-flight async detection
+    %
+    % Inputs:
+    %   fig - figure handle
+    %   guiData - GUI data structure
+    %   cfg - configuration struct
+
+    if ~isfield(guiData, 'asyncDetection') || ~guiData.asyncDetection.active
+        return;
+    end
+
+    fprintf('  Canceling in-flight AI detection...\n');
+    cleanupAsyncDetection(fig, guiData, false, cfg);
 end
 
 function updatePolygonPositions(polygonHandles, newPositions, labelHandles)
@@ -3339,49 +3321,20 @@ function cleanupAndClose(fig)
 
     guiData = get(fig, 'UserData');
 
-    % Clean up async detection if active
-    if isstruct(guiData) && isfield(guiData, 'asyncDetection')
-        if guiData.asyncDetection.active
-            % Stop polling timer
-            if ~isempty(guiData.asyncDetection.pollingTimer)
-                safeStopTimer(guiData.asyncDetection.pollingTimer);
+    % Cleanup all timers without cfg dependency (prevents leak on early errors)
+    if isstruct(guiData)
+        timerFields = {'aiTimer', 'pollingTimer', 'aiBreathingTimer'};
+        for i = 1:numel(timerFields)
+            if isfield(guiData, timerFields{i})
+                safeStopTimer(guiData.(timerFields{i}));
             end
-
-            % Clean up temp files
-            if ~isempty(guiData.asyncDetection.outputFile) && ...
-               exist(guiData.asyncDetection.outputFile, 'file')
-                try
-                    delete(guiData.asyncDetection.outputFile);
-                catch
-                    % Ignore cleanup errors
-                end
-            end
-
-            % Clean up temp image file
-            if ~isempty(guiData.asyncDetection.imgPath) && ...
-               exist(guiData.asyncDetection.imgPath, 'file')
-                try
-                    delete(guiData.asyncDetection.imgPath);
-                catch
-                    % Ignore cleanup errors
-                end
-            end
-
-            % Reset async state
-            guiData.asyncDetection.active = false;
-            guiData.asyncDetection.outputFile = '';
-            guiData.asyncDetection.imgPath = '';
-            guiData.asyncDetection.startTime = [];
-            guiData.asyncDetection.pollingTimer = [];
-
-            % Update guiData after async cleanup
-            set(fig, 'UserData', guiData);
         end
     end
 
-    % Stop and delete AI timer if exists
-    if isstruct(guiData) && isfield(guiData, 'aiTimer')
-        safeStopTimer(guiData.aiTimer);
+    % Clean up async detection if active
+    if isstruct(guiData) && isfield(guiData, 'cfg')
+        cancelActiveDetection(fig, guiData, guiData.cfg);
+        guiData = get(fig, 'UserData');
     end
 
     % CRITICAL FIX: Set action='stop' before deleting so main loop can exit cleanly
