@@ -160,8 +160,8 @@ def detect_quads(image_path: str, model_path: str, conf_threshold: float = 0.6, 
         - confidences: List of detection confidence scores [0, 1]
 
     Note:
-        Detections are sorted along the dominant strip axis (left->right or bottom->top)
-        so con_ labels remain ordered from low to high concentration even without MATLAB memory.
+        Detections are returned in YOLO's native order. MATLAB handles spatial sorting
+        based on display context (rotation, zoom, memory).
         Optimal performance when imgsz=960 (training resolution) with ~7 detections per strip.
     """
     from ultralytics import YOLO
@@ -207,7 +207,7 @@ def detect_quads(image_path: str, model_path: str, conf_threshold: float = 0.6, 
         quads.append(ordered_kpts.astype(np.float64))
         confidences.append(float(conf))
 
-    return sort_quads_by_layout(quads, confidences)
+    return quads, confidences
 
 
 def main():
