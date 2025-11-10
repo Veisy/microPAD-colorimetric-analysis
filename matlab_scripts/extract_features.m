@@ -13,7 +13,7 @@ function extract_features(varargin)
     % - 'includeLabelInExcel' logical: Include Label column in export.
     % - 'trainTestSplit' logical: Export additional train_/test_ splits (default true).
     % - 'testSize' double: Fraction of rows for test split (0-1, default 0.3).
-    % - 'splitGroupColumn' char|string: Column used to group rows during train/test split.
+    % - 'splitGroupColumn' char|string: Column name for grouping during train/test split (default 'PhoneType' for phone-based grouping; use 'ImageName' for image-level splits).
     % - 'randomSeed' double: Random seed for reproducible train/test splits (default: random).
     %
     % Output:
@@ -124,7 +124,7 @@ function extract_features(varargin)
     addParameter(p, 'includeLabelInExcel', true, @(x) (islogical(x) && isscalar(x)));
     addParameter(p, 'trainTestSplit', true, @(x) (islogical(x) && isscalar(x)));
     addParameter(p, 'testSize', 0.3, @(x) validateattributes(x, {'double','single'}, {'scalar','>',0,'<',1}));
-    addParameter(p, 'splitGroupColumn', 'ImageName', @(x) (ischar(x) && ~isempty(x)) || (isstring(x) && isscalar(x) && all(strlength(x) > 0)));
+    addParameter(p, 'splitGroupColumn', 'PhoneType', @(x) (ischar(x) && ~isempty(x)) || (isstring(x) && isscalar(x) && all(strlength(x) > 0)));
     addParameter(p, 'randomSeed', [], @(x) isempty(x) || (isnumeric(x) && isscalar(x) && x >= 0));
     parse(p, varargin{:});
     
@@ -2822,6 +2822,43 @@ function generateConsolidatedExcelFile(cfg)
             randomSeed = cfg.output.randomSeed;
         end
         [trainTable, testTable] = splitFeatureTable(featureTable, cfg.output.testSize, groupColumnResolved, randomSeed);
+
+        % Display split information
+        if strcmpi(groupColumnResolved, 'PhoneType')
+            % Phone-level splitting with dynamic validation count
+            uniquePhones = unique(featureTable.(groupColumnResolved));
+            numPhones = length(uniquePhones);
+            numValPhones = calculateValidationCount(numPhones);
+
+            fprintf('\n=== Phone-Level Train/Validation Split ===\n');
+            fprintf('Using dynamic validation count formula: ceil(N/5)\n');
+            fprintf('Total phones: %d | Validation phones: %d (%.1f%%)\n', ...
+                numPhones, numValPhones, 100 * numValPhones / numPhones);
+
+            if numValPhones == 0
+                warning('extract_features:insufficientPhones', ...
+                    'Insufficient phones for validation split (need >= 3). Using all data for training.');
+            else
+                % Display train phone names
+                trainPhones = unique(trainTable.(groupColumnResolved));
+                if iscell(trainPhones)
+                    trainPhoneStr = strjoin(trainPhones, ', ');
+                else
+                    trainPhoneStr = strjoin(string(trainPhones), ', ');
+                end
+                fprintf('Train phones (%d): %s\n', length(trainPhones), trainPhoneStr);
+
+                % Display validation phone names
+                valPhones = unique(testTable.(groupColumnResolved));
+                if iscell(valPhones)
+                    valPhoneStr = strjoin(valPhones, ', ');
+                else
+                    valPhoneStr = strjoin(string(valPhones), ', ');
+                end
+                fprintf('Validation phones (%d): %s\n', length(valPhones), valPhoneStr);
+            end
+            fprintf('==========================================\n\n');
+        end
     else
         groupColumnResolved = requestedGroupColumn;
     end
@@ -3055,14 +3092,29 @@ function [trainTable, testTable] = splitFeatureTable(featureTable, testFraction,
     end
 
     numGroups = max(groupIds);
-    if numGroups < 2
-        error('extract_features:splitInsufficientGroups', ...
-            'Train/test split requires at least two unique groups in column ''%s''.', groupColumn);
-    end
 
-    testFraction = double(testFraction);
-    desiredGroups = max(1, round(testFraction * numGroups));
-    testGroupCount = min(desiredGroups, numGroups - 1);
+    % Determine test group count based on grouping column type
+    if strcmpi(groupColumn, 'PhoneType')
+        % Phone-level splitting: use dynamic validation count formula
+        testGroupCount = calculateValidationCount(numGroups);
+
+        if testGroupCount == 0
+            % Zero validation case: return entire table as train, empty table as test
+            trainTable = featureTable;
+            testTable = featureTable([], :);
+            return;
+        end
+    else
+        % Non-phone splitting: use testFraction parameter (original behavior)
+        if numGroups < 2
+            error('extract_features:splitInsufficientGroups', ...
+                'Train/test split requires at least two unique groups in column ''%s''.', groupColumn);
+        end
+
+        testFraction = double(testFraction);
+        desiredGroups = max(1, round(testFraction * numGroups));
+        testGroupCount = min(desiredGroups, numGroups - 1);
+    end
 
     % Set random seed if provided for reproducibility
     if nargin >= 4 && ~isempty(randomSeed)
@@ -3080,6 +3132,29 @@ function [trainTable, testTable] = splitFeatureTable(featureTable, testFraction,
 
     trainTable = featureTable(trainMask, :);
     testTable = featureTable(testMask, :);
+end
+
+function numVal = calculateValidationCount(numPhones)
+    %% Calculate validation phone count using dynamic formula
+    %
+    % Inputs:
+    %   numPhones - Total number of phone directories (positive integer)
+    %
+    % Outputs:
+    %   numVal - Number of phones to use for validation (non-negative integer)
+    %
+    % Formula: ceil(numPhones / 5) when numPhones >= 3, otherwise 0
+
+    validateattributes(numPhones, {'numeric'}, {'scalar','integer','nonnegative'}, ...
+        'calculateValidationCount', 'numPhones');
+
+    numPhones = double(numPhones);
+
+    if numPhones >= 3
+        numVal = ceil(numPhones / 5);
+    else
+        numVal = 0;
+    end
 end
 
 function resolvedColumn = resolveSplitGroupColumn(featureTable, requestedColumn)
